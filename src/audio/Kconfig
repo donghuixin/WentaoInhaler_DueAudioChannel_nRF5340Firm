@@ -8,6 +8,14 @@ rsource "Kconfig.defaults"
 
 menu "Audio"
 
+config OPENEARABLE_SKIP_AUDIO_HW
+	bool "Skip ADAU1860 hardware codec initialization"
+	default n
+	help
+	  Diagnostic option for board bring-up when the ADAU1860 audio module is
+	  not populated. This keeps the rest of the firmware running so BLE,
+	  battery, and sensor paths can be validated without the hardware codec.
+
 choice AUDIO_FRAME_DURATION
 	prompt "Select frame duration - 7.5 ms frame duration is not tested"
 	default AUDIO_FRAME_DURATION_10_MS

@@ -324,7 +324,9 @@ int hw_codec_init(void)
 {
 	int ret;
 
+	LOG_WRN("ADAU I2C test: dac.begin begin");
 	ret = dac.begin();
+	LOG_WRN("ADAU I2C test: dac.begin returned %d", ret);
 	if (ret) {
 		return ret;
 	}

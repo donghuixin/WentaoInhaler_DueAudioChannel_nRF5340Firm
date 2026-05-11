@@ -9,10 +9,13 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/logging/log.h>
 #include <nrfx_i2s.h>
 #include <nrfx_clock.h>
 
 #include "audio_sync_timer.h"
+
+LOG_MODULE_REGISTER(audio_i2s, CONFIG_AUDIO_DATAPATH_LOG_LEVEL);
 
 #define I2S_NL DT_NODELABEL(i2s0)
 
@@ -111,6 +114,8 @@ void audio_i2s_start(const uint8_t *tx_buf, uint32_t *rx_buf)
 	nrfx_err_t ret;
 
 	/* Buffer size in 32-bit words */
+	LOG_WRN("AI2S start tx=%p rx=%p words=%u bytes=%u",
+		tx_buf, rx_buf, (unsigned int)I2S_SAMPLES_NUM, (unsigned int)BLOCK_SIZE_BYTES);
 	ret = nrfx_i2s_start(&i2s_inst, &i2s_buf, 0);
 	__ASSERT_NO_MSG(ret == NRFX_SUCCESS);
 
@@ -121,6 +126,7 @@ void audio_i2s_stop(void)
 {
 	__ASSERT_NO_MSG(state == AUDIO_I2S_STATE_STARTED);
 
+	LOG_WRN("AI2S stop");
 	nrfx_i2s_stop(&i2s_inst);
 
 	state = AUDIO_I2S_STATE_IDLE;
@@ -154,6 +160,11 @@ void audio_i2s_init(void)
 
 	ret = nrfx_i2s_init(&i2s_inst, &cfg, i2s_comp_handler);
 	__ASSERT_NO_MSG(ret == NRFX_SUCCESS);
+
+	LOG_WRN("AI2S init hz=%u bits=%u lrck=%u ch=%u ratio=%u mck=%x sdout=P0.28 sdin=P0.31",
+		(unsigned int)CONFIG_AUDIO_SAMPLE_RATE_HZ, (unsigned int)CONFIG_AUDIO_BIT_DEPTH_BITS,
+		(unsigned int)CONFIG_I2S_LRCK_FREQ_HZ, (unsigned int)CONFIG_I2S_CH_NUM,
+		(unsigned int)CONFIG_AUDIO_RATIO, (unsigned int)cfg.mck_setup);
 
 	state = AUDIO_I2S_STATE_IDLE;
 }

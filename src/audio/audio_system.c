@@ -510,17 +510,25 @@ int audio_system_init(void)
 		return ret;
 	}
 #else
+	LOG_WRN("ADAU I2C test: audio_datapath_init begin");
 	ret = audio_datapath_init();
 	if (ret) {
 		LOG_ERR("Failed to initialize audio datapath: %d", ret);
 		return ret;
 	}
+	LOG_WRN("ADAU I2C test: audio_datapath_init done");
 
-	ret = hw_codec_init();
-	if (ret) {
-		LOG_ERR("Failed to initialize HW codec: %d", ret);
-		return ret;
+	LOG_WRN("ADAU I2C test: hw_codec_init begin");
+	if (IS_ENABLED(CONFIG_OPENEARABLE_SKIP_AUDIO_HW)) {
+		LOG_WRN("Skipping ADAU1860 hardware codec initialization");
+	} else {
+		ret = hw_codec_init();
+		if (ret) {
+			LOG_ERR("Failed to initialize HW codec: %d", ret);
+			return ret;
+		}
 	}
+	LOG_WRN("ADAU I2C test: hw_codec_init done");
 #endif
 	k_poll_signal_init(&encoder_sig);
 

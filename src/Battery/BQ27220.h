@@ -12,6 +12,8 @@
 
 #define BQ27220_I2C_TIMEOUT_US 66
 #define BQ27220_RAM_TIMEOUT_US 1000
+#define BQ27220_CONFIG_UPDATE_TIMEOUT_MS 3000
+#define BQ27220_CONFIG_UPDATE_POLL_MS 100
 
 struct bat_status {
         bool DSG = false;
@@ -135,8 +137,8 @@ public:
     op_state operation_state();
     gauge_status gauging_state();
     void write_command(commands command);
-    void enter_config_update();
-    void exit_config_update(bool init = true);
+    bool enter_config_update();
+    bool exit_config_update(bool init = true);
 
     void full_access();
     void setup(const battery_settings &_battery_settings, bool init = true);

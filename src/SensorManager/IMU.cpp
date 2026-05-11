@@ -5,19 +5,20 @@
 #include <zephyr/kernel.h>
 #include <zephyr/zbus/zbus.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/sensor.h>
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_DECLARE(BMX160);
+LOG_MODULE_DECLARE(sensor_manager);
 
 static struct sensor_msg msg_imu;
 
-DFRobot_BMX160 IMU::imu(&I2C3);
+#define BMI270_NODE DT_NODELABEL(bmi270)
+static const struct device *const bmi270 = DEVICE_DT_GET(BMI270_NODE);
 
 IMU IMU::sensor;
 
 const SampleRateSetting<6> IMU::sample_rates = {
-    { BMX160_GYRO_ODR_25HZ, BMX160_GYRO_ODR_50HZ, BMX160_GYRO_ODR_100HZ,
-	BMX160_GYRO_ODR_200HZ, BMX160_GYRO_ODR_400HZ, BMX160_GYRO_ODR_800HZ },
+	{ 25, 50, 100, 200, 255, 255 },
 
 	{ 25, 50, 100, 200, 400, 800 },
 
@@ -27,13 +28,45 @@ const SampleRateSetting<6> IMU::sample_rates = {
 void IMU::update_sensor(struct k_work *work) {
 	int ret;
 
-	sBmx160SensorData_t magno_data;
-	sBmx160SensorData_t gyro_data;
-	sBmx160SensorData_t accel_data;
+	struct sensor_value accel[3];
+	struct sensor_value gyro[3];
+	float accel_data[3];
+	float gyro_data[3];
+	float magno_data[3] = { 0.0f, 0.0f, 0.0f };
+	static uint8_t sample_log_count;
 
-	imu.getAllData(&magno_data, &gyro_data, &accel_data);
+	ret = sensor_sample_fetch(bmi270);
+	if (ret) {
+		LOG_WRN("BMI270 sample fetch failed: %d", ret);
+		return;
+	}
 
-	size_t size =  3 * sizeof(float);
+	ret = sensor_channel_get(bmi270, SENSOR_CHAN_ACCEL_XYZ, accel);
+	if (ret) {
+		LOG_WRN("BMI270 accel read failed: %d", ret);
+		return;
+	}
+
+	ret = sensor_channel_get(bmi270, SENSOR_CHAN_GYRO_XYZ, gyro);
+	if (ret) {
+		LOG_WRN("BMI270 gyro read failed: %d", ret);
+		return;
+	}
+
+	for (int i = 0; i < 3; i++) {
+		accel_data[i] = sensor_value_to_float(&accel[i]);
+		gyro_data[i] = sensor_value_to_float(&gyro[i]) * 57.2957795f;
+	}
+
+	if (sample_log_count < 5) {
+		LOG_INF("BMI270 sample ax=%d.%06d ay=%d.%06d az=%d.%06d gx=%d.%06d gy=%d.%06d gz=%d.%06d",
+			accel[0].val1, accel[0].val2, accel[1].val1, accel[1].val2,
+			accel[2].val1, accel[2].val2, gyro[0].val1, gyro[0].val2,
+			gyro[1].val1, gyro[1].val2, gyro[2].val1, gyro[2].val2);
+		sample_log_count++;
+	}
+
+	size_t size = 3 * sizeof(float);
 	
 	msg_imu.sd = sensor._sd_logging;
 	msg_imu.stream = sensor._ble_stream;
@@ -61,19 +94,66 @@ void IMU::sensor_timer_handler(struct k_timer *dummy)
 };
 
 bool IMU::init(struct k_msgq * queue) {
+	int ret;
+
 	if (!_active) {
 		pm_device_runtime_get(ls_1_8);
     	_active = true;
 	}
 
-    if (!imu.begin()) {   // hardware I2C mode, can pass in address & alt Wire
-		LOG_ERR("Could not find a valid BMX160 sensor, check wiring!");
+	if (!device_is_ready(bmi270)) {
+		LOG_ERR("BMI270 device is not ready");
 		pm_device_runtime_put(ls_1_8);
     	_active = false;
 		return false;
-    }
+	}
 
-	imu.setAccelRange(eAccelRange_2G);
+	struct sensor_value full_scale;
+	struct sensor_value oversampling;
+
+	full_scale.val1 = 2;
+	full_scale.val2 = 0;
+	oversampling.val1 = 1;
+	oversampling.val2 = 0;
+
+	ret = sensor_attr_set(bmi270, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_FULL_SCALE,
+			      &full_scale);
+	if (ret) {
+		LOG_ERR("BMI270 accel full scale config failed: %d", ret);
+		pm_device_runtime_put(ls_1_8);
+		_active = false;
+		return false;
+	}
+
+	ret = sensor_attr_set(bmi270, SENSOR_CHAN_ACCEL_XYZ, SENSOR_ATTR_OVERSAMPLING,
+			      &oversampling);
+	if (ret) {
+		LOG_ERR("BMI270 accel oversampling config failed: %d", ret);
+		pm_device_runtime_put(ls_1_8);
+		_active = false;
+		return false;
+	}
+
+	full_scale.val1 = 500;
+	full_scale.val2 = 0;
+
+	ret = sensor_attr_set(bmi270, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_FULL_SCALE,
+			      &full_scale);
+	if (ret) {
+		LOG_ERR("BMI270 gyro full scale config failed: %d", ret);
+		pm_device_runtime_put(ls_1_8);
+		_active = false;
+		return false;
+	}
+
+	ret = sensor_attr_set(bmi270, SENSOR_CHAN_GYRO_XYZ, SENSOR_ATTR_OVERSAMPLING,
+			      &oversampling);
+	if (ret) {
+		LOG_ERR("BMI270 gyro oversampling config failed: %d", ret);
+		pm_device_runtime_put(ls_1_8);
+		_active = false;
+		return false;
+	}
 
 	sensor_queue = queue;
 	
@@ -87,8 +167,24 @@ void IMU::start(int sample_rate_idx) {
 	if (!_active) return;
 
     k_timeout_t t = K_USEC(1e6 / sample_rates.true_sample_rates[sample_rate_idx]);
+	struct sensor_value sampling_freq;
 
-	imu.setAccelODR(sample_rates.reg_vals[sample_rate_idx]);
+	sampling_freq.val1 = (int)sample_rates.sample_rates[sample_rate_idx];
+	sampling_freq.val2 = 0;
+
+	int ret = sensor_attr_set(bmi270, SENSOR_CHAN_ACCEL_XYZ,
+				  SENSOR_ATTR_SAMPLING_FREQUENCY, &sampling_freq);
+	if (ret) {
+		LOG_ERR("BMI270 accel sampling frequency config failed: %d", ret);
+		return;
+	}
+
+	ret = sensor_attr_set(bmi270, SENSOR_CHAN_GYRO_XYZ,
+			      SENSOR_ATTR_SAMPLING_FREQUENCY, &sampling_freq);
+	if (ret) {
+		LOG_ERR("BMI270 gyro sampling frequency config failed: %d", ret);
+		return;
+	}
 
 	_running = true;
 
@@ -103,8 +199,14 @@ void IMU::stop() {
 
 	k_timer_stop(&sensor.sensor_timer);
 
-	// turn off imu (?)
-	imu.softReset();
+	struct sensor_value sampling_freq;
+
+	sampling_freq.val1 = 0;
+	sampling_freq.val2 = 0;
+	(void)sensor_attr_set(bmi270, SENSOR_CHAN_ACCEL_XYZ,
+			      SENSOR_ATTR_SAMPLING_FREQUENCY, &sampling_freq);
+	(void)sensor_attr_set(bmi270, SENSOR_CHAN_GYRO_XYZ,
+			      SENSOR_ATTR_SAMPLING_FREQUENCY, &sampling_freq);
 
     pm_device_runtime_put(ls_1_8);
 }

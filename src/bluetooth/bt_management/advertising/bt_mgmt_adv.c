@@ -7,6 +7,7 @@
  #include "bt_mgmt.h"
 
  #include <zephyr/zbus/zbus.h>
+ #include <zephyr/sys/util.h>
  #include <zephyr/bluetooth/bluetooth.h>
  #include <zephyr/bluetooth/conn.h>
  
@@ -37,7 +38,7 @@
  K_MSGQ_DEFINE(bonds_queue, sizeof(bt_addr_le_t), BONDS_QUEUE_SIZE, 4);
  K_MSGQ_DEFINE(adv_queue, sizeof(uint8_t), CONFIG_BT_EXT_ADV_MAX_ADV_SET, 4);
  
- static struct bt_le_adv_param ext_adv_param = {
+static struct bt_le_adv_param ext_adv_param = {
 	 .id = BT_ID_DEFAULT,
 	 .sid = CONFIG_BLE_ACL_ADV_SID,
 	 .secondary_max_skip = 0,
@@ -45,7 +46,22 @@
 	 .interval_min = CONFIG_BLE_ACL_EXT_ADV_INT_MIN,
 	 .interval_max = CONFIG_BLE_ACL_EXT_ADV_INT_MAX,
 	 .peer = NULL,
- };
+};
+
+static const struct bt_data web_ble_legacy_adv[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA_BYTES(BT_DATA_UUID16_ALL, 0x58, 0xFE),
+};
+
+static struct bt_le_adv_param web_ble_legacy_adv_param = {
+	.id = BT_ID_DEFAULT,
+	.sid = CONFIG_BLE_ACL_ADV_SID,
+	.secondary_max_skip = 0,
+	.options = BT_LE_ADV_OPT_CONN | BT_LE_ADV_OPT_USE_NAME,
+	.interval_min = BT_GAP_ADV_FAST_INT_MIN_1,
+	.interval_max = BT_GAP_ADV_FAST_INT_MAX_1,
+	.peer = NULL,
+};
  
  static void bond_find(const struct bt_bond_info *info, void *user_data)
  {
@@ -436,6 +452,14 @@
 	 adv_local_size[ext_adv_index] = adv_size;
 	 per_adv_local[ext_adv_index] = per_adv;
 	 per_adv_local_size[ext_adv_index] = per_adv_size;
+
+	 if (IS_ENABLED(CONFIG_OPENEARABLE_WEB_BLE_LEGACY_ADV) && connectable) {
+		 LOG_WRN("Using Web Bluetooth legacy connectable advertising payload");
+		 adv_local[ext_adv_index] = web_ble_legacy_adv;
+		 adv_local_size[ext_adv_index] = ARRAY_SIZE(web_ble_legacy_adv);
+		 per_adv_local[ext_adv_index] = NULL;
+		 per_adv_local_size[ext_adv_index] = 0;
+	 }
  
 	 /* Only use fixed address if no privacy and it is the first ext adv set */
 	 if (!IS_ENABLED(CONFIG_BT_PRIVACY) && ext_adv_index == 0) {
@@ -446,7 +470,11 @@
 	 }
  
 	 if (connectable) {
-		 ret = bt_le_ext_adv_create(LE_AUDIO_EXTENDED_ADV_CONN_NAME, &adv_cb,
+		 const struct bt_le_adv_param *adv_param =
+			 IS_ENABLED(CONFIG_OPENEARABLE_WEB_BLE_LEGACY_ADV) ?
+			 &web_ble_legacy_adv_param : LE_AUDIO_EXTENDED_ADV_CONN_NAME;
+
+		 ret = bt_le_ext_adv_create(adv_param, &adv_cb,
 						&ext_adv[ext_adv_index]);
 		 if (ret) {
 			 LOG_ERR("Unable to create a connectable extended advertising set: %d", ret);
@@ -474,4 +502,3 @@
  {
 	 k_work_init(&adv_work, advertising_process);
  }
- 

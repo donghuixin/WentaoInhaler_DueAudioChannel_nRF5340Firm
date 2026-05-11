@@ -123,6 +123,11 @@
 			status = "okay";
         };
 	 };
+
+	 bmi270: bmi270@68 {
+		 compatible = "bosch,bmi270";
+		 reg = <0x68>;
+	 };
  
 	 adau1860: adau1860@64 {
 		 compatible = "analog,adau1860";
@@ -266,4 +271,3 @@
  //#include "openearable_v2_nrf5340_cpuapp_partition_conf.dts"
  #include <common/nordic/nrf5340_cpuapp_partition.dtsi>
  #include "openearable_v2_nrf5340_shared.dtsi"
- 

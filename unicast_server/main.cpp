@@ -7,6 +7,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/shell/shell_uart.h>
@@ -55,6 +56,82 @@ LOG_MODULE_REGISTER(main, CONFIG_MAIN_LOG_LEVEL);
 /* STEP 5.4 - Include header for USB */
 #include <zephyr/usb/usb_device.h>
 
+#if IS_ENABLED(CONFIG_OPENEARABLE_I2C3_SCAN_TEST)
+static int i2c_ping_addr(const struct device *bus, uint8_t addr)
+{
+	uint8_t dummy = 0;
+
+	return i2c_write(bus, &dummy, 0, addr);
+}
+
+static void i2c_log_probe(const char *name, const struct device *bus, uint8_t addr)
+{
+	uint8_t reg0 = 0xff;
+	int ping_ret = i2c_ping_addr(bus, addr);
+	int read_ret = i2c_burst_read(bus, addr, 0x00, &reg0, sizeof(reg0));
+
+	LOG_INF("%s probe addr=0x%02x ping=%d reg0_read=%d reg0=0x%02x",
+		name, addr, ping_ret, read_ret, reg0);
+}
+
+static void i2c_scan_bus(const char *name, const struct device *bus,
+			 const char *speed_name, uint32_t speed)
+{
+	int ret = i2c_configure(bus, I2C_SPEED_SET(speed));
+
+	LOG_INF("%s scan speed=%s configure=%d", name, speed_name, ret);
+	k_msleep(10);
+
+	i2c_log_probe(name, bus, 0x12); /* BMM150 direct I2C address, if routed */
+	i2c_log_probe(name, bus, 0x18); /* BMA580 on original OpenEarable */
+	i2c_log_probe(name, bus, 0x55); /* BQ27220 */
+	i2c_log_probe(name, bus, 0x62); /* MAXM86161 */
+	i2c_log_probe(name, bus, 0x64); /* ADAU1860 */
+	i2c_log_probe(name, bus, 0x68); /* BMI270/BMX160 default */
+	i2c_log_probe(name, bus, 0x69); /* BMI270/BMX160 alternate */
+	i2c_log_probe(name, bus, 0x6a); /* BQ25120A */
+	i2c_log_probe(name, bus, 0x76); /* BMP388 */
+
+	for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+		ret = i2c_ping_addr(bus, addr);
+		if (ret == 0) {
+			uint8_t reg0 = 0xff;
+			int read_ret = i2c_burst_read(bus, addr, 0x00, &reg0, sizeof(reg0));
+
+			LOG_INF("%s ACK addr=0x%02x reg0_read=%d reg0=0x%02x",
+				name, addr, read_ret, reg0);
+		}
+	}
+}
+
+static void run_i2c3_scan_test(void)
+{
+	const struct device *i2c1 = DEVICE_DT_GET(DT_NODELABEL(i2c1));
+	const struct device *i2c2 = DEVICE_DT_GET(DT_NODELABEL(i2c2));
+	const struct device *i2c3 = DEVICE_DT_GET(DT_NODELABEL(i2c3));
+	int ret;
+
+	LOG_INF("I2C bus scan diagnostic start");
+	LOG_INF("I2C1 device ready=%d", device_is_ready(i2c1));
+	LOG_INF("I2C2 device ready=%d", device_is_ready(i2c2));
+	LOG_INF("I2C3 device ready=%d", device_is_ready(i2c3));
+
+	ret = pm_device_runtime_get(ls_1_8);
+	LOG_INF("I2C bus scan ls_1_8 get ret=%d", ret);
+	k_msleep(100);
+
+	i2c_scan_bus("I2C1", i2c1, "100k", I2C_SPEED_STANDARD);
+	i2c_scan_bus("I2C1", i2c1, "400k", I2C_SPEED_FAST);
+	i2c_scan_bus("I2C2", i2c2, "100k", I2C_SPEED_STANDARD);
+	i2c_scan_bus("I2C2", i2c2, "400k", I2C_SPEED_FAST);
+	i2c_scan_bus("I2C3", i2c3, "100k", I2C_SPEED_STANDARD);
+	i2c_scan_bus("I2C3", i2c3, "400k", I2C_SPEED_FAST);
+	i2c_scan_bus("I2C3", i2c3, "1M", I2C_SPEED_FAST_PLUS);
+
+	LOG_INF("I2C bus scan diagnostic done");
+}
+#endif
+
 
 int main(void) {
 	int ret;
@@ -67,6 +144,10 @@ int main(void) {
 	uint8_t standalone = uicr_standalone_get();
 
 	LOG_INF("Standalone mode: %i", standalone);
+
+#if IS_ENABLED(CONFIG_OPENEARABLE_I2C3_SCAN_TEST)
+	run_i2c3_scan_test();
+#endif
 
 	/*sdcard_manager.init();
 

@@ -66,4 +66,36 @@ config SETUP_FUEL_GAUGE
 	help
 	  If enabled, fuel gauge will be setup during boot process
 
+config OPENEARABLE_ADAU_I2C_TEST_FORCE_POWER_ON
+	bool "Force power-on for ADAU1860 I2C diagnostics"
+	default n
+	help
+	  Diagnostic option for board bring-up. Keeps the normal battery and
+	  fuel-gauge setup path, but forces the firmware past the charger
+	  wait-for-wake condition so the ADAU1860 audio initialization can run.
+
+config OPENEARABLE_ADAU_I2C_TEST_SKIP_FUEL_GAUGE_SETUP
+	bool "Skip BQ27220 setup for ADAU1860 I2C diagnostics"
+	default n
+	help
+	  Diagnostic option for board bring-up. Avoids blocking forever in the
+	  BQ27220 CONFIG UPDATE loop when the fuel-gauge I2C path is not reliable,
+	  so the firmware can continue far enough to test ADAU1860 I2C access.
+
+config OPENEARABLE_BQ27220_FORCE_SETUP_ON_BOOT
+	bool "Force BQ27220 setup on boot for diagnostics"
+	default n
+	help
+	  Diagnostic option for validating BQ27220 data-memory writes. When
+	  enabled, the firmware runs the fuel-gauge setup path once during boot
+	  even if the reported DesignCapacity already matches the board settings.
+
+config OPENEARABLE_I2C3_SCAN_TEST
+	bool "Run I2C3 scan diagnostics at boot"
+	default n
+	help
+	  Diagnostic option for board bring-up. When enabled, the application keeps
+	  the 1.8 V load switch on and scans the I2C3 sensor bus at several bus
+	  speeds, logging ACK addresses and register 0 values over RTT.
+
 endmenu

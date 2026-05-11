@@ -25,6 +25,7 @@
 #include "audio_system.h"
 #include "streamctrl.h"
 #include "sd_card_playback.h"
+#include "../bluetooth/gatt_services/audio_waveform_service.h"
 
 #include "Equalizer.h"
 #include "sdlogger_wrapper.h"
@@ -120,6 +121,67 @@ static const char *const pres_comp_state_names[] = {
 	"WAIT",
 	"LOCKED",
 };
+
+static void audio_datapath_i2s_rx_probe(uint32_t const *rx_buf)
+{
+	static uint32_t block_count;
+
+	if (rx_buf == NULL) {
+		return;
+	}
+
+#if CONFIG_AUDIO_BIT_DEPTH_16
+	const int16_t *samples = (const int16_t *)rx_buf;
+	const size_t sample_count = BLOCK_SIZE_BYTES / sizeof(int16_t);
+	const size_t frame_count = sample_count / 2;
+
+	(void)audio_waveform_service_submit_i2s_block(samples, frame_count);
+#endif
+
+	block_count++;
+
+	if ((block_count > 5) && ((block_count % (1000000 / BLK_PERIOD_US)) != 0)) {
+		return;
+	}
+
+#if CONFIG_AUDIO_BIT_DEPTH_16
+	uint32_t sum_abs_l = 0;
+	uint32_t sum_abs_r = 0;
+	uint32_t peak_l = 0;
+	uint32_t peak_r = 0;
+	uint32_t nonzero_l = 0;
+	uint32_t nonzero_r = 0;
+	int16_t first_l = 0;
+	int16_t first_r = 0;
+
+	for (size_t i = 0; i + 1 < sample_count; i += 2) {
+		int32_t left = samples[i];
+		int32_t right = samples[i + 1];
+		uint32_t abs_l = left < 0 ? (uint32_t)-left : (uint32_t)left;
+		uint32_t abs_r = right < 0 ? (uint32_t)-right : (uint32_t)right;
+
+		if (i == 0) {
+			first_l = samples[i];
+			first_r = samples[i + 1];
+		}
+
+		sum_abs_l += abs_l;
+		sum_abs_r += abs_r;
+		peak_l = MAX(peak_l, abs_l);
+		peak_r = MAX(peak_r, abs_r);
+		nonzero_l += left != 0;
+		nonzero_r += right != 0;
+	}
+
+	LOG_WRN("ARX b=%u f=%u Lp=%u Lm=%u Ln=%u L0=%d Rp=%u Rm=%u Rn=%u R0=%d",
+		block_count, (uint32_t)frame_count, peak_l,
+		frame_count ? sum_abs_l / frame_count : 0, nonzero_l, first_l, peak_r,
+		frame_count ? sum_abs_r / frame_count : 0, nonzero_r, first_r);
+#else
+	LOG_WRN("ARX b=%u r0=%08x r1=%08x bytes=%u",
+		block_count, rx_buf[0], rx_buf[1], (unsigned int)BLOCK_SIZE_BYTES);
+#endif
+}
 
 extern struct ring_buf ring_buffer;
 extern struct k_mutex write_mutex;
@@ -835,6 +897,8 @@ static void audio_datapath_i2s_blk_complete(uint32_t frame_start_ts_us, uint32_t
 	if ((IS_ENABLED(CONFIG_STREAM_BIDIRECTIONAL) || (CONFIG_AUDIO_DEV == GATEWAY)) && IS_ENABLED(CONFIG_AUDIO_MIC_I2S)) {
 		/* Lock last filled buffer into message queue */
 		if (rx_buf_released != NULL) {
+			audio_datapath_i2s_rx_probe(rx_buf_released);
+
 			ret = data_fifo_block_lock(ctrl_blk.in.fifo, (void **)&rx_buf_released,
 						   BLOCK_SIZE_BYTES);
 
@@ -925,6 +989,12 @@ static void audio_datapath_i2s_start(void)
 #endif
 
 	/* Start I2S */
+	LOG_WRN("ADP start rx=%d tx=%d bytes=%u us=%u hz=%u bits=%u mic=%d bi=%d",
+		rx_buf_one != NULL, tx_buf_one != NULL, (unsigned int)BLOCK_SIZE_BYTES,
+		(unsigned int)CONFIG_AUDIO_FRAME_DURATION_US,
+		(unsigned int)CONFIG_AUDIO_SAMPLE_RATE_HZ,
+		(unsigned int)CONFIG_AUDIO_BIT_DEPTH_BITS,
+		IS_ENABLED(CONFIG_AUDIO_MIC_I2S), IS_ENABLED(CONFIG_STREAM_BIDIRECTIONAL));
 	audio_i2s_start(tx_buf_one, rx_buf_one);
 	audio_i2s_set_next_buf(tx_buf_two, rx_buf_two);
 }

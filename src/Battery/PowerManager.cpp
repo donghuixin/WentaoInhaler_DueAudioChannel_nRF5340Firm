@@ -2,6 +2,7 @@
 
 #include "macros_common.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <zephyr/sys/poweroff.h>
 #include <zephyr/sys/reboot.h>
@@ -310,7 +311,11 @@ int PowerManager::begin() {
     op_state state = fuel_gauge.operation_state();
     if (state.SEC != BQ27220::SEALED) {
         //battery_controller.setup();
-        fuel_gauge.setup(_battery_settings);
+        if (IS_ENABLED(CONFIG_OPENEARABLE_ADAU_I2C_TEST_SKIP_FUEL_GAUGE_SETUP)) {
+            LOG_WRN("ADAU I2C test: skipping fuel gauge setup after operation_state check");
+        } else {
+            fuel_gauge.setup(_battery_settings);
+        }
     }
 
     //k_timer_init(&charge_timer, charge_timer_handler, NULL);
@@ -329,6 +334,11 @@ int PowerManager::begin() {
             //TODO: Flash red LED once
             return power_down(false);
         }
+    }
+
+    if (IS_ENABLED(CONFIG_OPENEARABLE_ADAU_I2C_TEST_FORCE_POWER_ON)) {
+        LOG_WRN("ADAU I2C test: forcing power-on to reach audio initialization");
+        power_on = true;
     }
 
     if (charging) {
@@ -402,11 +412,33 @@ int PowerManager::begin() {
         //return ret;
     }
 
-    // check if fuel gauge has wrong value
-    float capacity = fuel_gauge.capacity();
-    if (abs(capacity - _battery_settings.capacity) > 1e-4) {
+    // Check the configured design capacity, not the learned full-charge capacity.
+    float design_capacity = fuel_gauge.design_cap();
+    if (IS_ENABLED(CONFIG_OPENEARABLE_BQ27220_FORCE_SETUP_ON_BOOT)) {
+        LOG_WRN("BQ27220 diagnostic: forcing fuel gauge setup on boot. design=%.3f",
+                design_capacity);
         fuel_gauge.setup(_battery_settings);
-        set_error_led();
+        design_capacity = fuel_gauge.design_cap();
+        LOG_INF("BQ27220 diagnostic: design capacity after forced setup: %.3f",
+                design_capacity);
+        if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
+            LOG_WRN("Fuel gauge design capacity still mismatched after forced setup: %.3f",
+                    design_capacity);
+            set_error_led();
+        }
+    } else if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
+        if (IS_ENABLED(CONFIG_OPENEARABLE_ADAU_I2C_TEST_SKIP_FUEL_GAUGE_SETUP)) {
+            LOG_WRN("ADAU I2C test: skipping fuel gauge setup after design capacity check: %.3f",
+                    design_capacity);
+        } else {
+            fuel_gauge.setup(_battery_settings);
+            design_capacity = fuel_gauge.design_cap();
+            if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
+                LOG_WRN("Fuel gauge design capacity still mismatched after setup: %.3f",
+                        design_capacity);
+                set_error_led();
+            }
+        }
     }
 
 #ifdef CONFIG_BOOTLOADER_MCUBOOT

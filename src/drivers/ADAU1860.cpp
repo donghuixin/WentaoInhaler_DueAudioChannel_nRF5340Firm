@@ -43,14 +43,18 @@ int ADAU1860::begin() {
         if (_active) return 0;
 
         _active = true;
+        LOG_WRN("ADAU begin bus=%s addr=%02x",
+                _i2c->master ? _i2c->master->name : "null", address);
 
         ret = pm_device_runtime_get(ls_1_8);
         if (ret != 0) {
                 LOG_ERR("Failed to get power domain 1.8V");
                 return ret;
         }
+        LOG_WRN("ADAU 1v8 on");
 
         _i2c->begin();
+        LOG_WRN("ADAU i2c on");
 
         //k_msleep(1);
 
@@ -60,6 +64,7 @@ int ADAU1860::begin() {
                 LOG_ERR("Failed to set DAC enable as output.\n");
                 return ret;
         }
+        LOG_WRN("ADAU pd high");
 
         //k_msleep(1);
 
@@ -75,6 +80,7 @@ int ADAU1860::begin() {
 
         // Non self-boot
         uint8_t startup_dlycnt_byp = 1;
+        LOG_WRN("ADAU first wr");
         writeReg(registers::PMU_CTRL2, &startup_dlycnt_byp, sizeof(startup_dlycnt_byp));
 
         // Power saving
@@ -89,7 +95,8 @@ int ADAU1860::begin() {
         writeReg(registers::CLK_CTRL13, &clk_ctrl13, sizeof(clk_ctrl13));
 
         uint8_t status2;
-        readReg(registers::STATUS2, &status2, sizeof(status2));
+        bool status2_ok = readReg(registers::STATUS2, &status2, sizeof(status2));
+        LOG_WRN("ADAU st2 ok=%d v=%02x", status2_ok, status2);
         LOG_DBG("STATUS2: 0x%x", status2);
 
         if (!(status2 & (1 << 7))) LOG_WRN("No power up");
@@ -157,6 +164,7 @@ int ADAU1860::begin() {
         //writeReg(registers::ASRCI_ROUTE01, &asrci_route01, sizeof(asrci_route01));
 
         if (IS_ENABLED(CONFIG_STREAM_BIDIRECTIONAL) && (CONFIG_AUDIO_DEV == HEADSET)) {
+                LOG_WRN("ADAU path dmic");
                 // I2S_IN enable | I2S_OUT enable | MIC enable
                 uint8_t sai_clk_pwr = 0x01 | (1 << 1) | (1 << 4);
                 writeReg(registers::SAI_CLK_PWR, &sai_clk_pwr, sizeof(sai_clk_pwr));
@@ -219,6 +227,8 @@ int ADAU1860::begin() {
                 uint8_t dmic_ctrl2 = 0x04; // 192kHz
                 writeReg(registers::DMIC_CTRL2, &dmic_ctrl2, sizeof(dmic_ctrl2));
         } else {
+                LOG_WRN("ADAU path off bi=%d dev=%d",
+                        IS_ENABLED(CONFIG_STREAM_BIDIRECTIONAL), CONFIG_AUDIO_DEV);
                 // I2S_IN enable
                 uint8_t sai_clk_pwr = 0x01;
                 writeReg(registers::SAI_CLK_PWR, &sai_clk_pwr, sizeof(sai_clk_pwr));
@@ -226,6 +236,32 @@ int ADAU1860::begin() {
                 uint8_t asrc_pwr = 0x1; // ASRCI0_EN 
                 writeReg(registers::ASRC_PWR, &asrc_pwr, sizeof(asrc_pwr));
         }
+
+        LOG_WRN("ADAU cfg bi=%d dev=%d mic=%d fdsp=%d eq=%d",
+                IS_ENABLED(CONFIG_STREAM_BIDIRECTIONAL), CONFIG_AUDIO_DEV,
+                IS_ENABLED(CONFIG_AUDIO_MIC_I2S), IS_ENABLED(CONFIG_FDSP),
+                IS_ENABLED(CONFIG_EQAULIZER_DSP));
+        auto probe_read8 = [this](uint32_t reg, uint16_t *ok_mask, uint16_t bit) -> uint8_t {
+                uint8_t value = 0;
+
+                if (readReg(reg, &value, sizeof(value))) {
+                        *ok_mask |= bit;
+                }
+
+                return value;
+        };
+        uint16_t ok = 0;
+        uint8_t st = probe_read8(registers::STATUS2, &ok, 1U << 0);
+        uint8_t cp = probe_read8(registers::CHIP_PWR, &ok, 1U << 1);
+        uint8_t sai = probe_read8(registers::SAI_CLK_PWR, &ok, 1U << 2);
+        uint8_t asrc = probe_read8(registers::ASRC_PWR, &ok, 1U << 3);
+        uint8_t dmp = probe_read8(registers::DMIC_PWR, &ok, 1U << 4);
+        uint8_t d1 = probe_read8(registers::DMIC_CTRL1, &ok, 1U << 5);
+        uint8_t d2 = probe_read8(registers::DMIC_CTRL2, &ok, 1U << 6);
+        uint8_t fd = probe_read8(registers::FDEC_ROUTE0, &ok, 1U << 7);
+        uint8_t sp = probe_read8(registers::SPT0_ROUTE0, &ok, 1U << 8);
+        LOG_WRN("ADAU r0 ok=%x st=%02x cp=%02x sai=%02x as=%02x dm=%02x d1=%02x d2=%02x fd=%02x sp=%02x",
+                (unsigned int)ok, st, cp, sai, asrc, dmp, d1, d2, fd, sp);
 
         uint8_t dac_route = DAC_ROUTE_I2S;
 
@@ -241,6 +277,18 @@ int ADAU1860::begin() {
         writeReg(registers::DAC_ROUTE0, &dac_route, sizeof(dac_route));
 
         setup_DAC();
+
+        ok = 0;
+        uint8_t dp = probe_read8(registers::DSP_PWR, &ok, 1U << 0);
+        uint8_t run = probe_read8(registers::FDSP_RUN, &ok, 1U << 1);
+        uint8_t c1 = probe_read8(registers::FDSP_CTRL1, &ok, 1U << 2);
+        uint8_t c4 = probe_read8(registers::FDSP_CTRL4, &ok, 1U << 3);
+        uint8_t dr = probe_read8(registers::DAC_ROUTE0, &ok, 1U << 4);
+        uint8_t hp = probe_read8(registers::ADC_DAC_HP_PWR, &ok, 1U << 5);
+        uint8_t dc1 = probe_read8(registers::DAC_CTRL1, &ok, 1U << 6);
+        uint8_t dc2 = probe_read8(registers::DAC_CTRL2, &ok, 1U << 7);
+        LOG_WRN("ADAU r1 ok=%x dsp=%02x run=%02x c1=%02x c4=%02x dr=%02x hp=%02x dc=%02x/%02x",
+                (unsigned int)ok, dp, run, c1, c4, dr, hp, dc1, dc2);
 
         LOG_DBG("DAC booted successfully");
 
@@ -329,6 +377,10 @@ int ADAU1860::setup_EQ() {
 }
 
 int ADAU1860::setup_FDSP() {
+        LOG_WRN("ADAU fdsp prog=%u params=%u banks=%u",
+                (unsigned int)sizeof(fdsp_program), (unsigned int)FDSP_NUM_PARAMS,
+                (unsigned int)FDSP_NUM_BANKS);
+
         uint8_t dsp_pwr = 0x1;
         writeReg(registers::DSP_PWR, &dsp_pwr, sizeof(dsp_pwr));
 
@@ -355,6 +407,21 @@ int ADAU1860::setup_FDSP() {
         // run dsp
         uint8_t fdsp_run = 0x1;
         writeReg(registers::FDSP_RUN, &fdsp_run, sizeof(fdsp_run));
+
+        auto probe_read8 = [this](uint32_t reg, uint16_t *ok_mask, uint16_t bit) -> uint8_t {
+                uint8_t value = 0;
+
+                if (readReg(reg, &value, sizeof(value))) {
+                        *ok_mask |= bit;
+                }
+
+                return value;
+        };
+        uint16_t ok = 0;
+        uint8_t dp = probe_read8(registers::DSP_PWR, &ok, 1U << 0);
+        uint8_t c4 = probe_read8(registers::FDSP_CTRL4, &ok, 1U << 1);
+        uint8_t run = probe_read8(registers::FDSP_RUN, &ok, 1U << 2);
+        LOG_WRN("ADAU fdsp ok=%x dsp=%02x c4=%02x run=%02x", (unsigned int)ok, dp, c4, run);
 
         return 0;
 }
@@ -473,11 +540,24 @@ int ADAU1860::fdsp_set_volume(uint8_t volume) {
 int ADAU1860::fdsp_bank_select(uint8_t bank) {
         uint8_t val;
 
+        LOG_WRN("ADAU bank=%u", bank);
         _active_bank = bank;
         readReg(registers::FDSP_CTRL1, &val, sizeof(val));
         val &= ~(0x03); // clear bank bits
         val |= (bank & 0x03); // set bank bits
         writeReg(registers::FDSP_CTRL1, &bank, sizeof(bank));
+        auto probe_read8 = [this](uint32_t reg, uint16_t *ok_mask, uint16_t bit) -> uint8_t {
+                uint8_t value = 0;
+
+                if (readReg(reg, &value, sizeof(value))) {
+                        *ok_mask |= bit;
+                }
+
+                return value;
+        };
+        uint16_t ok = 0;
+        uint8_t c1 = probe_read8(registers::FDSP_CTRL1, &ok, 1U);
+        LOG_WRN("ADAU bank c1=%02x ok=%x", c1, (unsigned int)ok);
 
         return 0;
 }

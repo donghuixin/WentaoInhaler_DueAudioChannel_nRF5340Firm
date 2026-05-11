@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OpenEarable BLE Console</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>OpenEarable BLE Console</h1>
+          <p id="browserState" class="muted">Checking Web Bluetooth support...</p>
+        </div>
+        <div class="status-stack" aria-live="polite">
+          <span id="linkState" class="status-pill neutral">Idle</span>
+          <span id="deviceName" class="device-name">No device</span>
+        </div>
+      </header>
+
+      <section class="toolbar" aria-label="Bluetooth actions">
+        <button id="scanBtn" type="button">Scan Advertisements</button>
+        <button id="connectNamedBtn" type="button">Connect OpenEarable</button>
+        <button id="connectAdvertisedBtn" type="button">Connect OE Advertised</button>
+        <button id="connectAnyBtn" type="button">Connect Any BLE</button>
+        <button id="disconnectBtn" type="button" disabled>Disconnect</button>
+        <button id="readBatteryBtn" type="button" disabled>Read Battery</button>
+        <button id="clearLogBtn" type="button">Clear Log</button>
+      </section>
+
+      <section class="grid">
+        <article class="panel device-panel">
+          <div class="panel-head">
+            <h2>Device</h2>
+            <span id="gattState" class="fine">GATT disconnected</span>
+          </div>
+          <dl class="facts">
+            <div>
+              <dt>Name</dt>
+              <dd id="factName">-</dd>
+            </div>
+            <div>
+              <dt>Browser ID</dt>
+              <dd id="factId">-</dd>
+            </div>
+            <div>
+              <dt>Battery</dt>
+              <dd id="factBattery">-</dd>
+            </div>
+            <div>
+              <dt>Identifier</dt>
+              <dd id="factIdentifier">-</dd>
+            </div>
+            <div>
+              <dt>Generation</dt>
+              <dd id="factGeneration">-</dd>
+            </div>
+            <div>
+              <dt>Firmware</dt>
+              <dd id="factFirmware">-</dd>
+            </div>
+            <div>
+              <dt>Audio Channel</dt>
+              <dd id="factAudioChannel">-</dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="panel controls-panel">
+          <div class="panel-head">
+            <h2>Sensor Stream</h2>
+            <span id="notifyState" class="fine">Notifications off</span>
+          </div>
+          <div class="form-row">
+            <label for="sensorId">Sensor</label>
+            <select id="sensorId">
+              <option value="0">IMU</option>
+              <option value="1">Temp/Baro</option>
+              <option value="2">Microphone</option>
+              <option value="4">PPG</option>
+              <option value="6">Optical Temp</option>
+              <option value="7">Bone Conduct.</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label for="sampleRateIndex">Rate Index</label>
+            <input id="sampleRateIndex" type="number" min="0" max="255" value="1">
+          </div>
+          <div class="button-row">
+            <button id="startImuBtn" type="button" disabled>Start IMU</button>
+            <button id="stopImuBtn" type="button" disabled>Stop IMU</button>
+          </div>
+          <div class="button-row">
+            <button id="enableSensorBtn" type="button" disabled>Enable Stream</button>
+            <button id="disableSensorBtn" type="button" disabled>Disable Sensor</button>
+          </div>
+          <div class="button-row">
+            <button id="subscribeSensorBtn" type="button" disabled>Subscribe Data</button>
+            <button id="subscribeStatusBtn" type="button" disabled>Subscribe Status</button>
+          </div>
+          <div class="metric-grid">
+            <div>
+              <span class="metric-label">Packets</span>
+              <strong id="packetCount">0</strong>
+            </div>
+            <div>
+              <span class="metric-label">Last Sensor</span>
+              <strong id="lastSensor">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Payload</span>
+              <strong id="lastPayload">-</strong>
+            </div>
+          </div>
+          <div class="imu-live" aria-label="IMU live values">
+            <div>
+              <span class="metric-label">Time</span>
+              <strong id="imuTime">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Accel X</span>
+              <strong id="imuAx">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Accel Y</span>
+              <strong id="imuAy">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Accel Z</span>
+              <strong id="imuAz">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Gyro X</span>
+              <strong id="imuGx">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Gyro Y</span>
+              <strong id="imuGy">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Gyro Z</span>
+              <strong id="imuGz">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Mag X</span>
+              <strong id="imuMx">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Mag Y</span>
+              <strong id="imuMy">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Mag Z</span>
+              <strong id="imuMz">-</strong>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel audio-panel">
+          <div class="panel-head">
+            <h2>Audio Waveform</h2>
+            <span id="audioWaveState" class="fine">Preview off</span>
+          </div>
+          <canvas id="audioWaveCanvas" class="wave-canvas" width="420" height="180"></canvas>
+          <div class="button-row">
+            <button id="startAudioWaveBtn" type="button" disabled>Start Wave</button>
+            <button id="stopAudioWaveBtn" type="button" disabled>Stop Wave</button>
+          </div>
+          <div class="button-row single-action">
+            <button id="readAudioWaveBtn" type="button" disabled>Read Latest Packet</button>
+          </div>
+          <div class="metric-grid audio-metrics">
+            <div>
+              <span class="metric-label">Seq</span>
+              <strong id="audioSeq">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Rate</span>
+              <strong id="audioRate">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Frames</span>
+              <strong id="audioFrames">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Peak</span>
+              <strong id="audioPeak">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Mean Abs</span>
+              <strong id="audioMean">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Frequency</span>
+              <strong id="audioFrequency">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Peak-to-Peak</span>
+              <strong id="audioPeakToPeak">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Estimate</span>
+              <strong id="audioFrequencyConfidence">-</strong>
+            </div>
+            <div>
+              <span class="metric-label">Plot Scale</span>
+              <strong id="audioPlotScale">-</strong>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel services-panel">
+          <div class="panel-head">
+            <h2>Services</h2>
+            <span id="serviceCount" class="fine">0 found</span>
+          </div>
+          <div id="servicesList" class="service-list"></div>
+        </article>
+
+        <article class="panel adv-panel">
+          <div class="panel-head">
+            <h2>Advertisements</h2>
+            <span id="scanState" class="fine">Not scanning</span>
+          </div>
+          <div id="advertisements" class="adv-list"></div>
+        </article>
+      </section>
+
+      <section class="panel diagnostics">
+        <div class="panel-head">
+          <h2>Expected Signals</h2>
+          <span class="fine">OpenEarable v2</span>
+        </div>
+        <div class="diagnostic-grid">
+          <div>
+            <span class="metric-label">Normal name</span>
+            <code>OpenEarable-XXXX</code>
+          </div>
+          <div>
+            <span class="metric-label">DFU name</span>
+            <code>OpenEarable_L_DFU</code>
+            <code>OpenEarable_R_DFU</code>
+          </div>
+          <div>
+            <span class="metric-label">Primary UUID</span>
+            <code>34c2e3bb-34aa-11eb-adc1-0242ac120002</code>
+          </div>
+          <div>
+            <span class="metric-label">After mass erase</span>
+            <code>UICR channel + HW revision must be written again</code>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-head">
+          <h2>Log</h2>
+          <span id="lastEvent" class="fine">No events</span>
+        </div>
+        <pre id="log"></pre>
+      </section>
+    </main>
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

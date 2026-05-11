@@ -2,6 +2,9 @@
 
 #include "openearable_common.h"
 
+#include <errno.h>
+#include <string.h>
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(bq27220, LOG_LEVEL_DBG);
 
@@ -263,88 +266,106 @@ void BQ27220::active_mode() {
 
 }*/
 
-void BQ27220::enter_config_update() {
+bool BQ27220::enter_config_update() {
     //write_command(0x14); //0x13);
     op_state state = operation_state();
     if (state.CFG_UPDATE) {
         LOG_WRN("Already in CONFIG UPDATE MODE.");
-        return;
+        return true;
     }
     write_command(CONFIG_UPDATE_ENTER);
-    k_msleep(1100);
-    do {
+
+    for (int elapsed_ms = 0; elapsed_ms < BQ27220_CONFIG_UPDATE_TIMEOUT_MS;
+         elapsed_ms += BQ27220_CONFIG_UPDATE_POLL_MS) {
+        k_msleep(BQ27220_CONFIG_UPDATE_POLL_MS);
         state = operation_state();
-        k_msleep(100);
-    } 
-    while (!state.CFG_UPDATE);
-    LOG_INF("CONFIG UPDATE MODE entered.");
+        if (state.CFG_UPDATE) {
+            LOG_INF("CONFIG UPDATE MODE entered.");
+            return true;
+        }
+    }
+
+    LOG_ERR("Timed out entering CONFIG UPDATE MODE. SEC=%d CFG_UPDATE=%d",
+            state.SEC, state.CFG_UPDATE);
+    return false;
 
     //if (state.CFG_UPDATE) printk("CONFIG UPDATE MODE entered.\n");
     //else printk("Failed to enter CONFIG UPDATE MODE.\n");
 }
 
-void BQ27220::exit_config_update(bool init) {
+bool BQ27220::exit_config_update(bool init) {
     op_state state = operation_state();
     if (!state.CFG_UPDATE) {
         LOG_WRN("Device is not in CONFIG UPDATE MODE.");
-        return;
+        return true;
     }
     if (init) write_command(CONFIG_UPDATE_EXIT);
     else write_command(CONFIG_UPDATE_EXIT_NO_INIT);
-    k_msleep(1100);
-    do {
+
+    for (int elapsed_ms = 0; elapsed_ms < BQ27220_CONFIG_UPDATE_TIMEOUT_MS;
+         elapsed_ms += BQ27220_CONFIG_UPDATE_POLL_MS) {
+        k_msleep(BQ27220_CONFIG_UPDATE_POLL_MS);
         state = operation_state();
-        k_msleep(100);
-    } while (state.CFG_UPDATE);
-    LOG_INF("CONFIG UPDATE MODE exited.");
+        if (!state.CFG_UPDATE) {
+            LOG_INF("CONFIG UPDATE MODE exited.");
+            return true;
+        }
+    }
+
+    LOG_ERR("Timed out exiting CONFIG UPDATE MODE. SEC=%d CFG_UPDATE=%d",
+            state.SEC, state.CFG_UPDATE);
+    return false;
     //if (!state.CFG_UPDATE) printk("CONFIG UPDATE MODE exited.\n");
     //else printk("Failed to exit CONFIG UPDATE MODE.\n");
 }
 
 void BQ27220::read_RAM(uint16_t ram_address, uint8_t * data, int len) {
         bool ret;
+        uint8_t addr[2] = {
+                (uint8_t)(ram_address & 0xFF),
+                (uint8_t)(ram_address >> 8),
+        };
 
-        writeReg(0x3E, (uint8_t *) &ram_address, sizeof(ram_address));
+        writeReg(0x3E, addr, sizeof(addr));
         k_usleep(BQ27220_RAM_TIMEOUT_US);
         ret = readReg(0x40, data, len);
 }
 
 int BQ27220::write_RAM(uint16_t ram_address, uint8_t * data, int len, bool check) {
-        uint8_t check_sum=0;
-        uint8_t data_len=0;
-        uint8_t buf[len];
-
-        bool ret;
-
-        writeReg(0x3E, (uint8_t *) &ram_address, sizeof(ram_address));
-
-        k_usleep(BQ27220_RAM_TIMEOUT_US);
-
-        ret = readReg(0x61, (uint8_t *) &data_len, sizeof(data_len));
-        ret = readReg(0x40, buf, len);
-        ret = readReg(0x60, (uint8_t *) &check_sum, sizeof(check_sum));
-
-        uint8_t my_check = (uint8_t)0xFF-check_sum; // - data[0] - data[1];
-
-        for (int i = 0; i < len; i++) {
-                my_check -= buf[i];
-                my_check += data[i];
+        if (len <= 0 || len > 32) {
+                LOG_ERR("Invalid RAM write length %d for addr=0x%04x", len, ram_address);
+                return -EINVAL;
         }
 
-        my_check = (uint8_t)0xFF - my_check;
+        uint8_t buf[34];
+        uint8_t check_sum = 0;
+        uint8_t data_len = len + 4;
 
-        writeReg(0x40, (uint8_t *) data, len);
-        writeReg(0x60, (uint8_t *) &my_check, sizeof(my_check));
-        writeReg(0x61, (uint8_t *) &data_len, sizeof(data_len));
+        buf[0] = ram_address & 0xFF;
+        buf[1] = ram_address >> 8;
+        memcpy(&buf[2], data, len);
+
+        for (int i = 0; i < len + 2; i++) {
+                check_sum += buf[i];
+        }
+        check_sum = 0xFF - check_sum;
+
+        uint8_t checksum_and_len[2] = { check_sum, data_len };
+
+        writeReg(0x3E, buf, len + 2);
+        writeReg(0x60, checksum_and_len, sizeof(checksum_and_len));
 
         k_usleep(BQ27220_RAM_TIMEOUT_US);
         
         if (check) {
-                uint8_t * read_buff = (uint8_t *) k_malloc(data_len);
+                uint8_t * read_buff = (uint8_t *) k_malloc(len);
+                if (read_buff == NULL) {
+                        return -ENOMEM;
+                }
 
-                read_RAM(ram_address, read_buff, data_len);
+                read_RAM(ram_address, read_buff, len);
 
-                for (int i = 0; i < data_len; i++) {
+                for (int i = 0; i < len; i++) {
                         if (read_buff[i] != data[i]) {
                                 k_free(read_buff);
                                 return -1;
@@ -369,6 +390,9 @@ int BQ27220::write_RAM(uint16_t ram_address, uint16_t val, bool check) {
 void BQ27220::setup(const battery_settings &_battery_settings, bool init) {
         int ret;
 
+        LOG_INF("Starting BQ27220 setup: design=%.1f mAh fcc=%.1f mAh soc=%.1f%%",
+                design_cap(), capacity(), state_of_charge());
+
         // unseal
         write_command(0x0414);
         k_msleep(100);
@@ -378,7 +402,16 @@ void BQ27220::setup(const battery_settings &_battery_settings, bool init) {
         // full access
         full_access();
 
-        enter_config_update();
+        op_state state = operation_state();
+        if (state.SEC != BQ27220::FULL_ACCESS_MODE) {
+                LOG_WRN("BQ27220 is not in full-access mode before setup. SEC=%d", state.SEC);
+        }
+
+        if (!enter_config_update()) {
+                LOG_ERR("BQ27220 setup aborted before RAM writes.");
+                write_command(SEAL);
+                return;
+        }
         //k_usleep(1000);
 
         //hibernate off (not supported by fuel gauge)
@@ -489,10 +522,15 @@ void BQ27220::setup(const battery_settings &_battery_settings, bool init) {
 
         ret = write_RAM(0x9272, 3700);
 
-        exit_config_update(init);
+        if (!exit_config_update(init)) {
+                LOG_ERR("BQ27220 setup did not leave CONFIG UPDATE MODE cleanly.");
+        }
 
         // put fuel gauge to sealed state
         write_command(SEAL);
+
+        LOG_INF("BQ27220 setup done: design=%.1f mAh fcc=%.1f mAh soc=%.1f%%",
+                design_cap(), capacity(), state_of_charge());
 }
 
 int BQ27220::set_int_callback(gpio_callback_handler_t handler) {

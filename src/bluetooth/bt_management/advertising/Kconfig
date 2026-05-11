@@ -67,6 +67,15 @@ config BLE_ACL_ADV_SID
 	range 0x00 0x0F
 	default 0x00
 
+config OPENEARABLE_WEB_BLE_LEGACY_ADV
+	bool "Use legacy connectable advertising for Web Bluetooth diagnostics"
+	default n
+	help
+	  Use a legacy connectable advertising set with a small FE58 payload instead
+	  of the normal LE Audio extended advertising payload. This is intended for
+	  Web Bluetooth on Windows/Chromium hosts that do not expose connectable
+	  extended advertising devices in the browser chooser.
+
 #----------------------------------------------------------------------------#
 menu "Log level"
 

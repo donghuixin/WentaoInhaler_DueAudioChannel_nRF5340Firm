@@ -85,6 +85,10 @@ const MICROPHONE_SENSOR_ID = 2;
 const MICROPHONE_SAMPLE_RATE_INDEX = 0;
 const STORAGE_STREAMING = 0x01;
 const STORAGE_DATA_STORAGE = 0x02;
+const AUDIO_WAVE_CONTROL_ENABLE = 0x01;
+const AUDIO_WAVE_CONTROL_RESET = 0x02;
+const AUDIO_WAVE_WINDOW_SHIFT = 2;
+const AUDIO_SAMPLE_FORMAT_PCM16 = 1;
 
 const els = {
   browserState: document.querySelector('#browserState'),
@@ -137,15 +141,19 @@ const els = {
   imuMy: document.querySelector('#imuMy'),
   imuMz: document.querySelector('#imuMz'),
   audioWaveState: document.querySelector('#audioWaveState'),
+  audioWindowMode: document.querySelector('#audioWindowMode'),
   audioSeq: document.querySelector('#audioSeq'),
   audioRate: document.querySelector('#audioRate'),
+  audioSampleInterval: document.querySelector('#audioSampleInterval'),
   audioFrames: document.querySelector('#audioFrames'),
   audioPeak: document.querySelector('#audioPeak'),
   audioMean: document.querySelector('#audioMean'),
   audioFrequency: document.querySelector('#audioFrequency'),
+  audioSamplesPerCycle: document.querySelector('#audioSamplesPerCycle'),
   audioPeakToPeak: document.querySelector('#audioPeakToPeak'),
   audioFrequencyConfidence: document.querySelector('#audioFrequencyConfidence'),
   audioPlotScale: document.querySelector('#audioPlotScale'),
+  audioPacketInfo: document.querySelector('#audioPacketInfo'),
   audioWaveCanvas: document.querySelector('#audioWaveCanvas')
 };
 
@@ -167,6 +175,8 @@ const AUDIO_PEAK_HISTORY_LIMIT = 180;
 let lastAudioSamples = [];
 let lastAudioPeak = 0;
 let lastAudioDurationMs = 0;
+let lastAudioPointRate = 0;
+let audioWindowAssembly = null;
 
 function setStatus(text, state = 'neutral') {
   els.linkState.textContent = text;
@@ -243,13 +253,16 @@ function resetAudioWaveformValues() {
   for (const id of [
     'audioSeq',
     'audioRate',
+    'audioSampleInterval',
     'audioFrames',
     'audioPeak',
     'audioMean',
     'audioFrequency',
+    'audioSamplesPerCycle',
     'audioPeakToPeak',
     'audioFrequencyConfidence',
-    'audioPlotScale'
+    'audioPlotScale',
+    'audioPacketInfo'
   ]) {
     els[id].textContent = '-';
   }
@@ -257,6 +270,8 @@ function resetAudioWaveformValues() {
   lastAudioSamples = [];
   lastAudioPeak = 0;
   lastAudioDurationMs = 0;
+  lastAudioPointRate = 0;
+  audioWindowAssembly = null;
   els.audioWaveState.textContent = 'Preview off';
   drawAudioWaveform([]);
 }
@@ -698,6 +713,28 @@ async function stopImuStream() {
   await writeSensorConfigPayload(IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, 0x00);
 }
 
+function selectedAudioWindowMode() {
+  const parsed = Number.parseInt(els.audioWindowMode?.value ?? '2', 10);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(3, parsed)) : 2;
+}
+
+function audioWaveformControlValue({ reset = true } = {}) {
+  const mode = selectedAudioWindowMode();
+  return AUDIO_WAVE_CONTROL_ENABLE |
+    (reset ? AUDIO_WAVE_CONTROL_RESET : 0) |
+    (mode << AUDIO_WAVE_WINDOW_SHIFT);
+}
+
+async function updateAudioWaveformWindow() {
+  if (!audioWaveformControlChar || !audioWaveformNotifying) {
+    return;
+  }
+
+  audioWindowAssembly = null;
+  await audioWaveformControlChar.writeValue(new Uint8Array([audioWaveformControlValue({ reset: true })]));
+  log(`Audio waveform window changed to ${els.audioWindowMode.value}`);
+}
+
 async function startAudioWaveform() {
   if (!sensorConfigChar || !audioWaveformControlChar || !audioWaveformDataChar) {
     log('Audio waveform channel unavailable');
@@ -711,13 +748,14 @@ async function startAudioWaveform() {
       audioWaveformNotifying = true;
     }
 
-    await audioWaveformControlChar.writeValue(new Uint8Array([0x03]));
+    audioWindowAssembly = null;
+    await audioWaveformControlChar.writeValue(new Uint8Array([audioWaveformControlValue({ reset: true })]));
     await writeSensorConfigPayload(MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, STORAGE_DATA_STORAGE);
 
     els.audioWaveState.textContent = 'Preview on';
     els.startAudioWaveBtn.disabled = true;
     els.stopAudioWaveBtn.disabled = false;
-    log('Audio waveform preview requested');
+    log(`Audio waveform preview requested, window=${els.audioWindowMode.value}`);
   } catch (error) {
     log(`Audio waveform start failed: ${error.message}`);
   }
@@ -740,6 +778,7 @@ async function stopAudioWaveform() {
     }
 
     els.audioWaveState.textContent = 'Preview off';
+    audioWindowAssembly = null;
     setConnectedUi(Boolean(server?.connected));
     log('Audio waveform preview stopped');
   } catch (error) {
@@ -894,39 +933,176 @@ function decodeAudioWaveformPacket(value) {
   const meanL = value.getUint16(14, true);
   const meanR = value.getUint16(16, true);
   const declaredCount = value.getUint8(18);
-  const sampleCount = Math.min(declaredCount, value.byteLength - 19);
-  const samples = new Int8Array(value.buffer, value.byteOffset + 19, sampleCount);
+  const isPcm16Packet = value.byteLength >= 28 && value.getUint8(19) === AUDIO_SAMPLE_FORMAT_PCM16;
+  const peak = Math.max(peakL, peakR);
+
+  if (!isPcm16Packet) {
+    return decodeLegacyAudioWaveformPacket(value, {
+      sequence,
+      sampleRate,
+      frameCount,
+      peakL,
+      peakR,
+      meanL,
+      meanR,
+      declaredCount,
+      peak
+    });
+  }
+
+  const sampleFormat = value.getUint8(19);
+  const windowId = value.getUint16(20, true);
+  const sampleOffset = value.getUint16(22, true);
+  const totalSampleCount = value.getUint16(24, true);
+  const decimation = Math.max(1, value.getUint16(26, true));
+  const sampleCount = Math.min(
+    declaredCount,
+    Math.floor(Math.max(0, value.byteLength - 34) / 2),
+    Math.max(0, totalSampleCount - sampleOffset)
+  );
+  const samples = [];
+  for (let i = 0; i < sampleCount; i++) {
+    samples.push(value.getInt16(28 + (i * 2), true));
+  }
+
+  const extensionOffset = 28 + (sampleCount * 2);
+  const hasRawPeakToPeak = value.byteLength >= extensionOffset + 6;
+  const rawMin = hasRawPeakToPeak ? value.getInt16(extensionOffset, true) : null;
+  const rawMax = hasRawPeakToPeak ? value.getInt16(extensionOffset + 2, true) : null;
+  const rawPeakToPeak = hasRawPeakToPeak ? value.getUint16(extensionOffset + 4, true) : null;
+  const pointRate = sampleRate ? sampleRate / decimation : 0;
+  const durationMs = sampleRate ? (frameCount / sampleRate) * 1000 : 0;
+
+  if (!audioWindowAssembly ||
+      audioWindowAssembly.windowId !== windowId ||
+      audioWindowAssembly.totalSampleCount !== totalSampleCount ||
+      audioWindowAssembly.frameCount !== frameCount) {
+    audioWindowAssembly = {
+      windowId,
+      totalSampleCount,
+      frameCount,
+      sampleRate,
+      pointRate,
+      decimation,
+      peakL,
+      peakR,
+      meanL,
+      meanR,
+      rawMin,
+      rawMax,
+      rawPeakToPeak,
+      samples: new Array(totalSampleCount),
+      received: new Array(totalSampleCount).fill(false),
+      receivedCount: 0
+    };
+  }
+
+  for (let i = 0; i < samples.length; i++) {
+    const index = sampleOffset + i;
+    if (index < audioWindowAssembly.samples.length && !audioWindowAssembly.received[index]) {
+      audioWindowAssembly.received[index] = true;
+      audioWindowAssembly.receivedCount += 1;
+    }
+    if (index < audioWindowAssembly.samples.length) {
+      audioWindowAssembly.samples[index] = samples[i];
+    }
+  }
+
+  const complete = audioWindowAssembly.receivedCount >= audioWindowAssembly.totalSampleCount;
+  const assembledSamples = complete
+    ? audioWindowAssembly.samples
+    : audioWindowAssembly.samples.filter((sample) => Number.isFinite(sample));
+  const frequency = complete
+    ? estimateWaveFrequency(assembledSamples, pointRate)
+    : { hz: null, detail: `receiving ${audioWindowAssembly.receivedCount}/${totalSampleCount} pts` };
+  const samplesPerCycle = frequency.hz && pointRate ? pointRate / frequency.hz : null;
+
+  els.audioSeq.textContent = String(sequence);
+  els.audioRate.textContent = sampleRate ? `${sampleRate} Hz PCM / ${formatFrequency(pointRate)} plot` : '-';
+  els.audioSampleInterval.textContent = pointRate ? `${(1000000 / pointRate).toFixed(2)} us` : '-';
+  els.audioFrames.textContent = `${frameCount} PCM / ${totalSampleCount} pts`;
+  els.audioPeak.textContent = `L ${peakL} / R ${peakR}`;
+  els.audioMean.textContent = `L ${meanL} / R ${meanR}`;
+  els.audioFrequency.textContent = formatFrequency(frequency.hz);
+  els.audioSamplesPerCycle.textContent = Number.isFinite(samplesPerCycle) ? `${samplesPerCycle.toFixed(2)} pts` : '-';
+  els.audioPeakToPeak.textContent = hasRawPeakToPeak
+    ? `${rawPeakToPeak} raw (${rawMin}..${rawMax})`
+    : `${getPeakToPeak(assembledSamples)} raw`;
+  els.audioFrequencyConfidence.textContent = frequency.detail;
+  els.audioPacketInfo.textContent = `pcm16 chunk ${sampleOffset}-${sampleOffset + sampleCount}/${totalSampleCount}, ${value.byteLength} B`;
+  els.audioWaveState.textContent = complete
+    ? 'Receiving PCM16 scope'
+    : `Receiving ${audioWindowAssembly.receivedCount}/${totalSampleCount}`;
+
+  audioPeakHistory.push(peak);
+  if (audioPeakHistory.length > AUDIO_PEAK_HISTORY_LIMIT) {
+    audioPeakHistory.shift();
+  }
+
+  if (complete || assembledSamples.length > 0) {
+    lastAudioSamples = assembledSamples.slice();
+    lastAudioPeak = peak;
+    lastAudioDurationMs = durationMs;
+    lastAudioPointRate = pointRate;
+    drawAudioWaveform(lastAudioSamples, {
+      peak,
+      durationMs,
+      pointRate,
+      sampleRate,
+      formatLabel: sampleFormat === AUDIO_SAMPLE_FORMAT_PCM16 ? 'pcm16' : `fmt ${sampleFormat}`
+    });
+  }
+
+  return `seq=${sequence} win=${windowId} offset=${sampleOffset} count=${sampleCount}/${totalSampleCount} rate=${sampleRate}Hz pointRate=${Math.round(pointRate)}Hz freq=${formatFrequency(frequency.hz)} p2p=${hasRawPeakToPeak ? rawPeakToPeak : '-'} peak=[${peakL},${peakR}]`;
+}
+
+function decodeLegacyAudioWaveformPacket(value, header) {
+  const sampleCount = Math.min(header.declaredCount, value.byteLength - 19);
+  const samples = Array.from(new Int8Array(value.buffer, value.byteOffset + 19, sampleCount));
   const extensionOffset = 19 + sampleCount;
   const hasRawPeakToPeak = value.byteLength >= extensionOffset + 6;
   const rawMin = hasRawPeakToPeak ? value.getInt16(extensionOffset, true) : null;
   const rawMax = hasRawPeakToPeak ? value.getInt16(extensionOffset + 2, true) : null;
   const rawPeakToPeak = hasRawPeakToPeak ? value.getUint16(extensionOffset + 4, true) : null;
-  const peak = Math.max(peakL, peakR);
-  const durationMs = sampleRate ? (frameCount / sampleRate) * 1000 : 0;
-  const previewPeakToPeak = getPeakToPeak(Array.from(samples));
-  const frequency = estimateWaveFrequency(samples, sampleRate);
+  const durationMs = header.sampleRate ? (header.frameCount / header.sampleRate) * 1000 : 0;
+  const pointRate = durationMs > 0 ? sampleCount / (durationMs / 1000) : header.sampleRate;
+  const frequency = estimateWaveFrequency(samples, pointRate);
+  const samplesPerCycle = frequency.hz && pointRate ? pointRate / frequency.hz : null;
+  const previewPeakToPeak = getPeakToPeak(samples);
 
-  els.audioSeq.textContent = String(sequence);
-  els.audioRate.textContent = sampleRate ? `${sampleRate} Hz` : '-';
-  els.audioFrames.textContent = String(frameCount);
-  els.audioPeak.textContent = `L ${peakL} / R ${peakR}`;
-  els.audioMean.textContent = `L ${meanL} / R ${meanR}`;
+  els.audioSeq.textContent = String(header.sequence);
+  els.audioRate.textContent = header.sampleRate ? `${header.sampleRate} Hz PCM / ${formatFrequency(pointRate)} plot` : '-';
+  els.audioSampleInterval.textContent = pointRate ? `${(1000000 / pointRate).toFixed(2)} us` : '-';
+  els.audioFrames.textContent = `${header.frameCount} PCM / ${sampleCount} pts`;
+  els.audioPeak.textContent = `L ${header.peakL} / R ${header.peakR}`;
+  els.audioMean.textContent = `L ${header.meanL} / R ${header.meanR}`;
   els.audioFrequency.textContent = formatFrequency(frequency.hz);
+  els.audioSamplesPerCycle.textContent = Number.isFinite(samplesPerCycle) ? `${samplesPerCycle.toFixed(2)} pts` : '-';
   els.audioPeakToPeak.textContent = hasRawPeakToPeak
     ? `${rawPeakToPeak} raw (${rawMin}..${rawMax})`
-    : `~${peak * 2} raw / ${previewPeakToPeak} preview`;
+    : `~${header.peak * 2} raw / ${previewPeakToPeak} preview`;
   els.audioFrequencyConfidence.textContent = frequency.detail;
-  els.audioWaveState.textContent = audioWaveformNotifying ? 'Receiving preview' : 'Preview available';
-  audioPeakHistory.push(peak);
+  els.audioPacketInfo.textContent = `int8 preview, ${value.byteLength} B`;
+  els.audioWaveState.textContent = audioWaveformNotifying ? 'Receiving legacy preview' : 'Preview available';
+
+  audioPeakHistory.push(header.peak);
   if (audioPeakHistory.length > AUDIO_PEAK_HISTORY_LIMIT) {
     audioPeakHistory.shift();
   }
-  lastAudioSamples = Array.from(samples);
-  lastAudioPeak = peak;
-  lastAudioDurationMs = durationMs;
-  drawAudioWaveform(lastAudioSamples, { peak, durationMs });
 
-  return `seq=${sequence} rate=${sampleRate}Hz frames=${frameCount} freq=${formatFrequency(frequency.hz)} p2p=${hasRawPeakToPeak ? rawPeakToPeak : `~${peak * 2}`} peak=[${peakL},${peakR}] mean=[${meanL},${meanR}] samples=${sampleCount}`;
+  lastAudioSamples = samples;
+  lastAudioPeak = header.peak;
+  lastAudioDurationMs = durationMs;
+  lastAudioPointRate = pointRate;
+  drawAudioWaveform(lastAudioSamples, {
+    peak: header.peak,
+    durationMs,
+    pointRate,
+    sampleRate: header.sampleRate,
+    formatLabel: 'int8'
+  });
+
+  return `seq=${header.sequence} rate=${header.sampleRate}Hz frames=${header.frameCount} freq=${formatFrequency(frequency.hz)} p2p=${hasRawPeakToPeak ? rawPeakToPeak : `~${header.peak * 2}`} peak=[${header.peakL},${header.peakR}] mean=[${header.meanL},${header.meanR}] samples=${sampleCount}`;
 }
 
 function getPeakToPeak(samples) {
@@ -1076,7 +1252,10 @@ function drawAudioWaveform(samples, options = {}) {
   const durationLabel = Number.isFinite(options.durationMs) && options.durationMs > 0
     ? options.durationMs.toFixed(2)
     : '?';
-  els.audioPlotScale.textContent = `AC auto x${Math.max(1, Math.round(120 / maxAbsSample))} raw ${rawPeak}`;
+  const pointRate = Number.isFinite(options.pointRate) && options.pointRate > 0 ? options.pointRate : 0;
+  const sampleRate = Number.isFinite(options.sampleRate) && options.sampleRate > 0 ? options.sampleRate : 0;
+  const formatLabel = options.formatLabel || 'pcm';
+  els.audioPlotScale.textContent = `${formatLabel} raw AC auto, raw peak ${rawPeak}`;
 
   ctx.strokeStyle = '#29d3ad';
   ctx.lineWidth = 2;
@@ -1093,9 +1272,24 @@ function drawAudioWaveform(samples, options = {}) {
   }
   ctx.stroke();
 
+  if (acSamples.length <= 520) {
+    ctx.fillStyle = '#e8fff7';
+    for (let i = 0; i < acSamples.length; i++) {
+      const x = acSamples.length === 1 ? width / 2 : (i / (acSamples.length - 1)) * width;
+      const y = (waveHeight / 2) - (acSamples[i] / maxAbsSample) * (waveHeight * 0.42);
+      ctx.beginPath();
+      ctx.arc(x, y, 2.1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   ctx.fillStyle = 'rgba(220, 232, 223, 0.58)';
   ctx.font = '12px Cascadia Mono, Consolas, monospace';
-  ctx.fillText(`latest ${durationLabel} ms AC scope, 48 kHz-derived`, 14, 18);
+  const pointText = pointRate ? `${formatFrequency(pointRate)} plot` : 'unknown plot rate';
+  const sampleText = sampleRate ? `${formatFrequency(sampleRate)} PCM` : 'unknown PCM';
+  const intervalText = pointRate ? `${(1000000 / pointRate).toFixed(2)} us/point` : '? us/point';
+  ctx.fillText(`latest ${durationLabel} ms AC scope, ${pointText} from ${sampleText}`, 14, 18);
+  ctx.fillText(`${formatLabel}, ${acSamples.length} points, ${intervalText}`, 14, 40);
 
   if (audioPeakHistory.length > 1 && historyHeight > 20) {
     const maxPeak = Math.max(1, ...audioPeakHistory);
@@ -1192,6 +1386,11 @@ els.stopImuBtn.addEventListener('click', stopImuStream);
 els.startAudioWaveBtn.addEventListener('click', startAudioWaveform);
 els.stopAudioWaveBtn.addEventListener('click', stopAudioWaveform);
 els.readAudioWaveBtn.addEventListener('click', readAudioWaveform);
+els.audioWindowMode.addEventListener('change', () => {
+  updateAudioWaveformWindow().catch((error) => {
+    log(`Audio waveform window update failed: ${error.message}`);
+  });
+});
 els.enableSensorBtn.addEventListener('click', () => writeSensorConfig(true));
 els.disableSensorBtn.addEventListener('click', () => writeSensorConfig(false));
 els.subscribeSensorBtn.addEventListener('click', toggleSensorDataNotify);
@@ -1203,5 +1402,6 @@ setConnectedUi(false);
 checkSupport();
 window.addEventListener('resize', () => drawAudioWaveform(lastAudioSamples, {
   peak: lastAudioPeak,
-  durationMs: lastAudioDurationMs
+  durationMs: lastAudioDurationMs,
+  pointRate: lastAudioPointRate
 }));

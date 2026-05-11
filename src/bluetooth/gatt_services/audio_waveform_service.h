@@ -27,7 +27,8 @@
 #define BT_UUID_AUDIO_WAVEFORM_DATA \
 	BT_UUID_DECLARE_128(BT_UUID_AUDIO_WAVEFORM_DATA_VAL)
 
-#define AUDIO_WAVEFORM_SAMPLE_COUNT 96
+#define AUDIO_WAVEFORM_SAMPLES_PER_PACKET 96
+#define AUDIO_WAVEFORM_SAMPLE_FORMAT_PCM16 1
 
 struct audio_waveform_packet {
 	uint32_t sequence;
@@ -38,7 +39,12 @@ struct audio_waveform_packet {
 	uint16_t mean_abs_l;
 	uint16_t mean_abs_r;
 	uint8_t sample_count;
-	int8_t samples[AUDIO_WAVEFORM_SAMPLE_COUNT];
+	uint8_t sample_format;
+	uint16_t window_id;
+	uint16_t sample_offset;
+	uint16_t total_sample_count;
+	uint16_t decimation;
+	int16_t samples[AUDIO_WAVEFORM_SAMPLES_PER_PACKET];
 	int16_t min_mono;
 	int16_t max_mono;
 	uint16_t peak_to_peak_mono;

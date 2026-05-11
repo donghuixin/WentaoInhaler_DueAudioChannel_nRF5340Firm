@@ -15,19 +15,32 @@ LOG_MODULE_REGISTER(audio_waveform_service, CONFIG_BLE_LOG_LEVEL);
 #define CONFIG_AUDIO_SAMPLE_RATE_HZ 0
 #endif
 
-#define AUDIO_WAVEFORM_NOTIFY_DIVISOR 20
-#define AUDIO_WAVEFORM_QUEUE_DEPTH 4
+#define AUDIO_WAVEFORM_CONTROL_ENABLE BIT(0)
+#define AUDIO_WAVEFORM_CONTROL_RESET BIT(1)
+#define AUDIO_WAVEFORM_CONTROL_WINDOW_SHIFT 2
+#define AUDIO_WAVEFORM_CONTROL_WINDOW_MASK (BIT(2) | BIT(3))
+
+#define AUDIO_WAVEFORM_DEFAULT_SAMPLE_RATE_HZ 48000U
+#define AUDIO_WAVEFORM_NOTIFY_DIVISOR 20U
+#define AUDIO_WAVEFORM_MAX_PLOT_POINTS 480U
+#define AUDIO_WAVEFORM_QUEUE_DEPTH 8
 #define AUDIO_WAVEFORM_THREAD_STACK_SIZE 1536
 #define AUDIO_WAVEFORM_THREAD_PRIORITY 7
 
 static uint8_t control_value;
 static bool capture_enabled;
 static bool notify_enabled;
+static uint8_t window_mode;
 static uint32_t source_block_count;
 static uint32_t sequence;
+static uint16_t window_id;
 static struct audio_waveform_packet latest_packet;
-static int16_t scope_window[AUDIO_WAVEFORM_SAMPLE_COUNT];
-static size_t scope_frame_count;
+static int16_t scope_points[AUDIO_WAVEFORM_MAX_PLOT_POINTS];
+static uint16_t scope_point_count;
+static uint16_t scope_target_frames;
+static uint16_t scope_target_points;
+static uint16_t scope_decimation;
+static uint16_t scope_frame_count;
 static bool scope_capture_active;
 static uint32_t scope_sum_abs_l;
 static uint32_t scope_sum_abs_r;
@@ -35,6 +48,8 @@ static uint16_t scope_peak_l;
 static uint16_t scope_peak_r;
 static int16_t scope_min_mono;
 static int16_t scope_max_mono;
+static int32_t decimation_sum;
+static uint16_t decimation_count;
 
 static struct k_thread audio_waveform_thread_data;
 static K_THREAD_STACK_DEFINE(audio_waveform_thread_stack, AUDIO_WAVEFORM_THREAD_STACK_SIZE);
@@ -46,17 +61,127 @@ static uint16_t abs_i16_u16(int16_t value)
 	return value == INT16_MIN ? 32768U : (uint16_t)abs(value);
 }
 
-static int8_t clamp_i8(int32_t value)
+static uint32_t waveform_sample_rate_hz(void)
 {
-	if (value > INT8_MAX) {
-		return INT8_MAX;
+	return CONFIG_AUDIO_SAMPLE_RATE_HZ > 0 ? CONFIG_AUDIO_SAMPLE_RATE_HZ :
+						 AUDIO_WAVEFORM_DEFAULT_SAMPLE_RATE_HZ;
+}
+
+static void waveform_configure_window(void)
+{
+	const uint32_t sample_rate = waveform_sample_rate_hz();
+	uint32_t target_frames;
+	uint32_t target_points;
+
+	switch (window_mode) {
+	case 1:
+		target_frames = sample_rate / 100U; /* 10 ms */
+		target_points = target_frames;
+		break;
+	case 2:
+		target_frames = sample_rate / 20U; /* 50 ms */
+		target_points = AUDIO_WAVEFORM_MAX_PLOT_POINTS;
+		break;
+	case 3:
+		target_frames = sample_rate / 10U; /* 100 ms */
+		target_points = AUDIO_WAVEFORM_MAX_PLOT_POINTS;
+		break;
+	case 0:
+	default:
+		target_frames = AUDIO_WAVEFORM_SAMPLES_PER_PACKET; /* 2 ms at 48 kHz */
+		target_points = AUDIO_WAVEFORM_SAMPLES_PER_PACKET;
+		break;
 	}
 
-	if (value < INT8_MIN) {
-		return INT8_MIN;
+	target_frames = CLAMP(target_frames, 1U, UINT16_MAX);
+	target_points = CLAMP(target_points, 1U, AUDIO_WAVEFORM_MAX_PLOT_POINTS);
+	target_points = MIN(target_points, target_frames);
+
+	scope_decimation = MAX(1U, target_frames / target_points);
+	scope_target_points = (uint16_t)(target_frames / scope_decimation);
+	scope_target_points = MIN(scope_target_points, AUDIO_WAVEFORM_MAX_PLOT_POINTS);
+	scope_target_frames = (uint16_t)(scope_target_points * scope_decimation);
+}
+
+static void waveform_reset_capture(bool reset_sequence)
+{
+	scope_capture_active = false;
+	scope_point_count = 0;
+	scope_frame_count = 0;
+	decimation_sum = 0;
+	decimation_count = 0;
+	source_block_count = 0;
+	k_msgq_purge(&audio_waveform_queue);
+
+	if (reset_sequence) {
+		sequence = 0;
+		window_id++;
+	}
+}
+
+static void waveform_begin_capture(void)
+{
+	waveform_configure_window();
+	scope_capture_active = true;
+	scope_point_count = 0;
+	scope_frame_count = 0;
+	scope_sum_abs_l = 0;
+	scope_sum_abs_r = 0;
+	scope_peak_l = 0;
+	scope_peak_r = 0;
+	scope_min_mono = INT16_MAX;
+	scope_max_mono = INT16_MIN;
+	decimation_sum = 0;
+	decimation_count = 0;
+	window_id++;
+}
+
+static int waveform_queue_scope_packets(void)
+{
+	struct audio_waveform_packet packet;
+	const uint16_t mean_l = scope_frame_count > 0 ?
+				(uint16_t)(scope_sum_abs_l / scope_frame_count) : 0;
+	const uint16_t mean_r = scope_frame_count > 0 ?
+				(uint16_t)(scope_sum_abs_r / scope_frame_count) : 0;
+	const int32_t peak_to_peak = (int32_t)scope_max_mono - (int32_t)scope_min_mono;
+	const uint16_t p2p = peak_to_peak > UINT16_MAX ? UINT16_MAX : (uint16_t)peak_to_peak;
+	uint16_t offset = 0;
+	int ret = 0;
+
+	k_msgq_purge(&audio_waveform_queue);
+
+	while (offset < scope_point_count) {
+		const uint16_t chunk_count = MIN(AUDIO_WAVEFORM_SAMPLES_PER_PACKET,
+						scope_point_count - offset);
+
+		memset(&packet, 0, sizeof(packet));
+		packet.sequence = sequence++;
+		packet.sample_rate_hz = waveform_sample_rate_hz();
+		packet.frame_count = scope_target_frames;
+		packet.peak_l = scope_peak_l;
+		packet.peak_r = scope_peak_r;
+		packet.mean_abs_l = mean_l;
+		packet.mean_abs_r = mean_r;
+		packet.sample_count = (uint8_t)chunk_count;
+		packet.sample_format = AUDIO_WAVEFORM_SAMPLE_FORMAT_PCM16;
+		packet.window_id = window_id;
+		packet.sample_offset = offset;
+		packet.total_sample_count = scope_point_count;
+		packet.decimation = scope_decimation;
+		memcpy(packet.samples, &scope_points[offset], chunk_count * sizeof(packet.samples[0]));
+		packet.min_mono = scope_min_mono;
+		packet.max_mono = scope_max_mono;
+		packet.peak_to_peak_mono = p2p;
+
+		ret = k_msgq_put(&audio_waveform_queue, &packet, K_NO_WAIT);
+		if (ret != 0) {
+			return ret;
+		}
+
+		offset += chunk_count;
 	}
 
-	return (int8_t)value;
+	return ret;
 }
 
 static ssize_t read_control(struct bt_conn *conn,
@@ -85,15 +210,18 @@ static ssize_t write_control(struct bt_conn *conn,
 	}
 
 	control_value = *(const uint8_t *)buf;
-	capture_enabled = (control_value & BIT(0)) != 0;
+	capture_enabled = (control_value & AUDIO_WAVEFORM_CONTROL_ENABLE) != 0;
+	window_mode = (control_value & AUDIO_WAVEFORM_CONTROL_WINDOW_MASK) >>
+		      AUDIO_WAVEFORM_CONTROL_WINDOW_SHIFT;
+	waveform_configure_window();
 
-	if ((control_value & BIT(1)) != 0) {
-		sequence = 0;
-		source_block_count = 0;
-		k_msgq_purge(&audio_waveform_queue);
+	if ((control_value & AUDIO_WAVEFORM_CONTROL_RESET) != 0) {
+		waveform_reset_capture(true);
 	}
 
-	LOG_INF("Audio waveform preview %s", capture_enabled ? "enabled" : "disabled");
+	LOG_INF("Audio waveform preview %s mode=%u frames=%u points=%u decim=%u",
+		capture_enabled ? "enabled" : "disabled", window_mode,
+		scope_target_frames, scope_target_points, scope_decimation);
 	return len;
 }
 
@@ -114,6 +242,7 @@ static void waveform_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t v
 
 	if (!notify_enabled) {
 		k_msgq_purge(&audio_waveform_queue);
+		scope_capture_active = false;
 	}
 }
 
@@ -132,8 +261,6 @@ BT_GATT_CCC(waveform_ccc_cfg_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 
 int audio_waveform_service_submit_i2s_block(const int16_t *samples, size_t frame_count)
 {
-	struct audio_waveform_packet packet = {0};
-
 	if (!capture_enabled || !notify_enabled) {
 		return -EACCES;
 	}
@@ -149,65 +276,43 @@ int audio_waveform_service_submit_i2s_block(const int16_t *samples, size_t frame
 			return 0;
 		}
 
-		scope_capture_active = true;
-		scope_frame_count = 0;
-		scope_sum_abs_l = 0;
-		scope_sum_abs_r = 0;
-		scope_peak_l = 0;
-		scope_peak_r = 0;
-		scope_min_mono = INT16_MAX;
-		scope_max_mono = INT16_MIN;
+		waveform_begin_capture();
 	}
 
-	const size_t frames_to_copy = MIN(frame_count,
-					 AUDIO_WAVEFORM_SAMPLE_COUNT - scope_frame_count);
-
-	for (size_t i = 0; i < frames_to_copy; i++) {
+	for (size_t i = 0; i < frame_count; i++) {
 		const int16_t left = samples[i * 2];
 		const int16_t right = samples[(i * 2) + 1];
 		const uint16_t abs_l = abs_i16_u16(left);
 		const uint16_t abs_r = abs_i16_u16(right);
 		const int32_t mono = ((int32_t)left + (int32_t)right) / 2;
 
-		scope_window[scope_frame_count + i] = (int16_t)mono;
 		scope_min_mono = MIN(scope_min_mono, (int16_t)mono);
 		scope_max_mono = MAX(scope_max_mono, (int16_t)mono);
 		scope_sum_abs_l += abs_l;
 		scope_sum_abs_r += abs_r;
 		scope_peak_l = MAX(scope_peak_l, abs_l);
 		scope_peak_r = MAX(scope_peak_r, abs_r);
+
+		decimation_sum += mono;
+		decimation_count++;
+		scope_frame_count++;
+
+		if (decimation_count >= scope_decimation &&
+		    scope_point_count < scope_target_points) {
+			scope_points[scope_point_count++] =
+				(int16_t)(decimation_sum / decimation_count);
+			decimation_sum = 0;
+			decimation_count = 0;
+		}
+
+		if (scope_frame_count >= scope_target_frames ||
+		    scope_point_count >= scope_target_points) {
+			scope_capture_active = false;
+			return waveform_queue_scope_packets();
+		}
 	}
 
-	scope_frame_count += frames_to_copy;
-
-	if (scope_frame_count < AUDIO_WAVEFORM_SAMPLE_COUNT) {
-		return 0;
-	}
-
-	scope_capture_active = false;
-	packet.sequence = sequence++;
-	packet.sample_rate_hz = CONFIG_AUDIO_SAMPLE_RATE_HZ;
-	packet.frame_count = scope_frame_count > UINT16_MAX ? UINT16_MAX : (uint16_t)scope_frame_count;
-	packet.sample_count = AUDIO_WAVEFORM_SAMPLE_COUNT;
-	packet.peak_l = scope_peak_l;
-	packet.peak_r = scope_peak_r;
-	packet.mean_abs_l = (uint16_t)(scope_sum_abs_l / scope_frame_count);
-	packet.mean_abs_r = (uint16_t)(scope_sum_abs_r / scope_frame_count);
-	packet.min_mono = scope_min_mono;
-	packet.max_mono = scope_max_mono;
-	const int32_t peak_to_peak = (int32_t)scope_max_mono - (int32_t)scope_min_mono;
-	packet.peak_to_peak_mono = peak_to_peak > UINT16_MAX ? UINT16_MAX : (uint16_t)peak_to_peak;
-
-	const uint16_t preview_peak = MAX(scope_peak_l, scope_peak_r);
-
-	for (size_t i = 0; i < AUDIO_WAVEFORM_SAMPLE_COUNT; i++) {
-		const int32_t mono = scope_window[i];
-		const int32_t scaled = preview_peak > 0 ? (mono * 120) / preview_peak : 0;
-
-		packet.samples[i] = clamp_i8(scaled);
-	}
-
-	return k_msgq_put(&audio_waveform_queue, &packet, K_NO_WAIT);
+	return 0;
 }
 
 static void audio_waveform_notify_thread(void *arg1, void *arg2, void *arg3)

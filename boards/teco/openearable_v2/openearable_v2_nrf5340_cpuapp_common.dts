@@ -127,6 +127,7 @@
 	 bmi270: bmi270@68 {
 		 compatible = "bosch,bmi270";
 		 reg = <0x68>;
+		 zephyr,deferred-init;
 	 };
  
 	 adau1860: adau1860@64 {

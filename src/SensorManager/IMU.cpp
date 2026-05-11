@@ -8,6 +8,7 @@
 #include <zephyr/drivers/sensor.h>
 
 #include <zephyr/logging/log.h>
+#include <errno.h>
 LOG_MODULE_DECLARE(sensor_manager);
 
 static struct sensor_msg msg_imu;
@@ -102,9 +103,20 @@ bool IMU::init(struct k_msgq * queue) {
 	}
 
 	if (!device_is_ready(bmi270)) {
-		LOG_ERR("BMI270 device is not ready");
+		LOG_INF("BMI270 deferred init after V_LS power-on");
+		ret = device_init(bmi270);
+		if (ret && ret != -EALREADY) {
+			LOG_ERR("BMI270 device init failed: %d", ret);
+			pm_device_runtime_put(ls_1_8);
+			_active = false;
+			return false;
+		}
+	}
+
+	if (!device_is_ready(bmi270)) {
+		LOG_ERR("BMI270 device is not ready after init");
 		pm_device_runtime_put(ls_1_8);
-    	_active = false;
+		_active = false;
 		return false;
 	}
 

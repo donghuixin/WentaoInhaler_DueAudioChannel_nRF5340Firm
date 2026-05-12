@@ -1,198 +1,236 @@
-# OpenEarable 2 - Firmware
+﻿# OpenEarable 48 kHz PCM16 Development Branch
 
-[OpenEarable](openearable.com) is the world's first fully open-source AI platform for ear-based sensing applications with true wireless audio. Packed with an unprecedented array of high-precision sensors, OpenEarable redefines what's possible in wearable tech. Designed for both development and research applications, OpenEarable is modular, reconfigurable, and built for the future.
-<br/><br/><br/>
-<img width="1323" height="568" alt="image" src="https://github.com/user-attachments/assets/ab4e2b0e-9645-4428-975f-466c7ef2f13b" />
+This branch is a working OpenEarable firmware and Web Bluetooth setup for the current hardware bring-up. It is not the upstream OpenEarable 2 README. The focus of this branch is:
 
+- nRF Connect SDK 3.0.1 build for `openearable_v2/nrf5340/cpuapp`
+- 48 kHz PCM16 audio preview from the ADAU1860/I2S path
+- Web Bluetooth connection from Chrome/Edge on Windows
+- IMU streaming with the BMI270-compatible board wiring used in this project
+- keeping the 48 kHz build usable while avoiding the previous 96 kHz experiment path
 
-## Table of Contents
+## Current Branch
 
-1. [Setup](#setup)
+Use this branch:
 
-2. [Contributing](#contributing)
-
-3. [Battery States](#battery-states)
-
-4. [Connection States](#connection-states)  
-   
-5. [SD Card](#sd-card)
-
-6. [Citing](#citing)
-
-
-## Setup
-1. **Install Visual Studio Code (VS Code)**  
-   - Download and install from [https://code.visualstudio.com](https://code.visualstudio.com).
-
-2. **Install the J‑Link Software and Documentation Package**
-   - Download and install from [https://www.segger.com/downloads/jlink/](https://www.segger.com/downloads/jlink/).
-     
-3. **Install nRF-Util**  
-   - Download from [nRF Util – Nordic Semiconductor](https://www.nordicsemi.com/Products/Development-tools/nRF-Util).
-   - Add `nrfutil` to your system's `PATH` environment variable.
-
-4. **Install the nRF Connect for VS Code Extension**  
-   - Open VS Code.
-   - Go to the Extensions tab and install **"nRF Connect for VS Code"**.
-   - Install all required dependencies when prompted.
-
-5. **Install the Toolchain via nRF Connect**  
-   - Open the **nRF Connect** tab in VS Code.
-   - Click **"Install Toolchain"**.
-   - Select and install **version 3.0.1**.
-
-6. **Install the nRF Connect SDK**  
-   - In the **nRF Connect** tab, select **"Manage SDK"**. 
-   - Install **SDK version 3.0.1**.
-
-7. **Open the Firmware Folder in VS Code**  
-   - Use `File > Open Folder` or drag-and-drop the firmware directory into VS Code.
-   - OR in the **APPLICATIONS** section of the nRF Connect tab:
-     - Select `Open Exisiting Application`.
-     - Select the `open-earable-2` directory.
-
-8. **Configure the Application Build**
-   - If not already open, navigate to the nrfConnect extension tab in VSCode.
-   - In the **APPLICATIONS** section of the nRF Connect extension tab:  
-     - Select the `open-earable-2` application.  
-     - Click **"+ Add build configuration"** to set up a new build.
-     - Select the SDK version 3.0.1, toolchain version 3.0.1, and `open-earable-2/nrf5340/cpuapp` as board target.
-     - To build **with FOTA** (firmware over-the-air update functionality):
-       - Leave the `Base configuration files (Kconfig fragments)` dropdown empty.
-       - as `Extra CMAKE arguments` set `-DFILE_SUFFIX="fota"`.
-       - as `Build directory` name set `build_fota`.
-     -  To build **without FOTA**:
-        - Select `prj.conf` as the `Base configuration files (Kconfig fragments)`.
-        - Do not set any of the FOTA flags described above.
-    
-9. **J-Link Setup**
-   - Wire your J-Link to the debugging breakout PCB as shown below.
-   ![image](https://github.com/user-attachments/assets/2eeec41e-6be1-4a4f-b986-7d9a07b0f8e5)
-   - If you do not own a J-Link yet, here are a few options (do **NOT** use J-Link clones, they will not work and are illegal!):
-      - [J-Link EDU Mini](https://mou.sr/3LrwiVe) (available to educational institutions, private persons, and students) with [JTAG adapter](https://www.adafruit.com/product/2094) and [cable](https://www.adafruit.com/product/1675).
-      - Full-scale J-Link for commercial use (e.g., [J-Link BASE Compact](https://mou.sr/4oQkAls)).
-      - ⚠️ The wiring show in the figure above is for the full-scale J-Link pinout. If you use the [JTAG adapter](https://www.adafruit.com/product/2094) the wiring may be different so make sure it is correct in your case!.
-
-11. **Build and Flash**
-   - Click on `Generate and Build` and wait for the application to build (this will take some time)
-   - Make sure your device is charged or powered via USB. If the battery is fully discharged, the charging management IC will no longer supply power to the MCU from the battery, so you won’t be able to flash the MCU unless the battery is charged or the device is directly powered via USB.
-   - Open a new terminal in VS Code and run the following command from the root of the `open-earable-v2` directory to flash the FOTA build. Make sure to set the serial number of your J-Link (right click your J-Link in the `CONNECTED DEVICES` tab of the nRF connect extension and copy the serial number).
-   ```bash
-   # --right for the right ear device, or no flag to retain left/right bonding, --standalone for no pair   
-   # --hw version is optional and can only be used with --left or --right
-   ./tools/flash/flash_fota.sh --snr 123456789 --left --hw 2.0.1    
-   ```
-
-   - or without FOTA
-   ```bash
-   # --right for the right ear device, or no flag to retain left/right bonding, --standalone for no pair
-   # --hw version is optional and can only be used with --left or --right
-
-   ./tools/flash/flash.sh --snr 123456789 --left    
-   ```
-     
-   - The FOTA update script is also available for Windows as `./tools/flash/flash_fota.ps1`. To execute it, open PowerShell with administrative privileges.
-
-11. **Recover Board**
-   - If the application or network core becomes unresponsive, or you encounter flashing issues, you can recover the board using the recovery script. The `--snr` parameter specifies the serial number of your J-Link debugger.
-   - Ensure the device is powered via USB or that the battery is sufficiently charged before running the recovery process. Otherwise, the MCU may not power up correctly and the recovery will fail.
-   ```bash
-   ./tools/flash/recover.sh --snr 123456789
-   ```
-   - After successful recovery, you can attempt to flash the firmware again.
-   
-12. **Enable Debug Output**
-   - Open the **J-Link Configuration** program on your computer.  
-      - On macOS: Press `CMD` + `Space` and search for `J-Link Config`.  
-      - On Windows: Search for the program from the taskbar.  
-   - Ensure your J-Link is connected to your computer.  
-   - In the **Connected via USB** table, locate your J-Link device. Double-click it or right-click and select **Configure**.  
-   - Find the **Virtual COM-Port** option and select **Enable**. Click **OK** to apply the setting.  
-   - Open **Visual Studio Code**.  
-   - In the left sidebar, open the **Extensions** menu.  
-      - Search for and install the [**Serial Monitor**](https://marketplace.visualstudio.com/items?itemName=ms-vscode.vscode-serial-monitor) extension.  
-      - In the top menu bar, click **Terminal → New Terminal**.  
-      - A terminal window will appear at the bottom of VS Code. Open the **Serial Monitor** tab.  
-      - In the **Port** dropdown menu, select your J-Link’s COM port.  
-      - Set the **Baud rate** to **115200**.  
-      - Click **Start Monitoring**.  
-      - Ensure your earable is connected to the debugger probe. You should now see debug output appearing when you interact with the device (e.g., press button).
-
-13. **Recover Board**
-   - If the application or network core becomes unresponsive, or you encounter flashing issues, you can recover the board using the recovery script. The `--snr` parameter specifies the serial number of your J-Link debugger.
-   - Ensure the device is powered via USB or that the battery is sufficiently charged before running the recovery process. Otherwise, the MCU may not power up correctly and the recovery will fail.
-      ```bash
-      ./tools/flash/recover.sh --snr 123456789
-      ```
-   - After successful recovery, you can attempt to flash the firmware again (you will have to restore left/right bonding and hardware version).
-
-
-
-## Contributing
-Contributor workflow, validation steps, code documentation expectations, and repository-specific Git guidance are defined in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-If you change build behavior, flashing scripts, repository structure, or public firmware APIs, update that guide in the same change so the contributor documentation stays aligned with the repository.
-
-## Battery States
-Battery states will overwrite LED connection states. All LED states can be manually overwritten via BLE service.
-
-### Charging States
-
-| LED State         | Description                                                                 |
-|------------------|-----------------------------------------------------------------------------|
-| 🟥 Red - Solid      | > 20 seconds = battery fault or deep discharge*                       |
-| 🔴 Red - Pulsing    | Pre-charge phase or system-down voltage not yet cleared                     |
-| 🟧 Orange - Solid   | Power connected, but charging current is not verified or not at desired level |
-| 🟠 Orange - Pulsing | At least 80% of the target charging current is reached                      |
-| 🟢 Green - Pulsing  | Trickle charge; final voltage (constant voltage) reached. Can be disabled via config |
-| 🟩 Green - Solid    | Fully charged                                                               |
-
-*If your OpenEarable goes into deep discharge (solid red) after pre-charge (red pulse), you can unplug the OpenEarable and plug it in again. This should recover the device.
-
-
-### Discharging States
-
-| LED State           | Description                                                              |
-|--------------------|--------------------------------------------------------------------------|
-| 🟠 Orange - Blinking | Battery low (7% remaining or EDV2 reached). Disabled by default, enable via config |
-| 🔴 Red - Blinking      | Battery critical (3% remaining or EDV1 reached)                          |
-
-
-## Connection States
-Battery states will overwrite LED connection states. All LED states can be manually overwritten via BLE service.
-
-| LED State                           | Description                                                                 |
-|-------------------------------------|-----------------------------------------------------------------------------|
-| 🔵 Blue – Blinking Very Fast        | Configured as **left device**, searching for **right device**               |
-| 🔴 Red – Blinking Very Fast         | Configured as **right device**, searching for **left device**               |
-| 🔵 Blue – Blinking Fast             | Paired with left/right, **ready for device bonding**                        |
-| 🔵 Blue – Blinking Slow             | Bonded, **waiting for connection**                                          |
-| 🟢 Green – Blinking Slow            | **Connected**                                                               |
-| 🟣 Purple – Blinking Slow           | **SD card recording**                                                       |
-
-## SD Card
-Because ZephyrOS does not allow remounting of SD cards, it is **very important that the device is turned of before inserting or removing the SD card**.
-As long as a recording to the SD card is active, the LED light will blink purple.
-
-
-### File Parsing
-Files recorded to the local microSD card in the binary `*.oe` format can be parsed using <a href="https://colab.research.google.com/drive/1qwdvjAM5Y5pLbNW5t3r9f0ITpAuxBKeq" target="_blank">this Python notebook</a>.
-
-## Citing
-If you are using OpenEarable, please cite is as follows:
-```
-@article{roddiger2025openearable,
-     title = {OpenEarable 2.0: Open-Source Earphone Platform for Physiological Ear Sensing},
-     author = {Röddiger, Tobias and Küttner, Michael and Lepold, Philipp and King, Tobias and Moschina, Dennis and Bagge, Oliver and Paradiso, Joseph A. and Clarke, Christopher and Beigl, Michael},
-     year = 2025,
-     journal = {Proceedings of the ACM on Interactive, Mobile, Wearable and Ubiquitous Technologies},
-     volume = {9},
-     number = {1},
-     pages = {1--33},
-     publisher={ACM New York, NY, USA}
-}
+```powershell
+git checkout 48khz
 ```
 
+The branch is pushed to:
 
+```text
+https://github.com/ljqljqljq8/OpenEarable/tree/48khz
+```
 
+Recent branch contents include:
 
+- `CONFIG_OPENEARABLE_WEB_BLE_LEGACY_ADV=y` so Windows/Chrome Web Bluetooth can discover the device.
+- BMI270 deferred initialization so the IMU is initialized after the sensor rail is powered.
+- `Audio Waveform Service` for PCM16 waveform preview over BLE GATT.
+- Web UI under `tools/openearable-web-bluetooth/` for IMU and audio waveform testing.
+
+## Required Toolchain
+
+Use the nRF Connect VS Code extension with:
+
+```text
+nRF Connect SDK: v3.0.1
+nRF Connect Toolchain: v3.0.1
+Board: openearable_v2/nrf5340/cpuapp
+```
+
+Do not point the nRF Connect extension at an old SDK workspace. The SDK top directory should be the current workspace that contains this repository and the matching NCS modules, for example:
+
+```text
+E:\Projects\Project_2026\Openarable_Project
+```
+
+The build should use the NCS toolchain Python, CMake, Ninja, and Zephyr SDK from the installed nRF Connect toolchain. Do not force the system Python into the build.
+
+## Recommended VS Code Build Configuration
+
+Create a fresh build configuration from the nRF Connect sidebar:
+
+```text
+Application: open-earable-2
+Board target: openearable_v2/nrf5340/cpuapp
+SDK/toolchain: v3.0.1
+Build directory name: build_48khz_pcm16
+Pristine build: Yes
+```
+
+Kconfig and CMake selections:
+
+```text
+Base configuration files: prj.conf
+Extra Kconfig fragments: empty
+Base Devicetree overlays: empty
+Extra Devicetree overlays: empty
+Extra CMake arguments: empty
+System build: Use sysbuild
+```
+
+Do not select the FOTA file suffix for this debug branch unless you intentionally need the FOTA/sysbuild variant. The current bring-up and Web BLE tests use `prj.conf`.
+
+## Flashing
+
+After the build finishes, use the nRF Connect `Flash` action for the `build_48khz_pcm16` configuration.
+
+If the device has flash protection or a previous incompatible image, use mass erase/recover through nRF Connect or `west flash --erase`. A successful flash should show both images programmed on nRF5340, including the network core image.
+
+After a mass erase or a fresh board recovery, write the UICR values used by this hardware configuration:
+
+```powershell
+nrfutil device write --serial-number 802002436 --family nrf53 --core application --address 0x00FF80F4 --value 0
+nrfutil device write --serial-number 802002436 --family nrf53 --core application --address 0x00FF8100 --value 0x02000000
+nrfutil device reset --serial-number 802002436 --family nrf53
+```
+
+Replace `802002436` with the serial number of your J-Link/nRF debug probe.
+
+## Web Bluetooth Console
+
+The Web Bluetooth test UI is in:
+
+```text
+tools/openearable-web-bluetooth/
+```
+
+Run a local static server from that directory. This repository includes a small Node.js server:
+
+```powershell
+cd tools\openearable-web-bluetooth
+node server.js --port=8766
+```
+
+Open Chrome or Edge at:
+
+```text
+http://127.0.0.1:8766/
+```
+
+Web Bluetooth requires a secure context; Chromium accepts `localhost` and `127.0.0.1`.
+
+If the page was already open before an update, hard refresh it with `Ctrl+F5`.
+
+## BLE Connection Notes
+
+Expected device name format:
+
+```text
+OpenEarable-XXXX
+```
+
+If Chrome cannot find the device:
+
+- Disconnect it from phones and other browser tabs.
+- Power-cycle or reset the board.
+- Confirm the flashed build contains `CONFIG_OPENEARABLE_WEB_BLE_LEGACY_ADV=y`.
+- Re-write the UICR values after mass erase.
+- Use `Connect Any BLE` if the browser filter misses the advertised name.
+
+The Web BLE page connects to GATT services. Advertisement data alone is not enough for sensor streaming.
+
+## IMU Test
+
+The current hardware does not use a single BMX160 device. The IMU-compatible path is:
+
+```text
+BMI270 accel/gyro on the main I2C bus
+BMM150 magnetometer behind the BMI270 AUX interface
+```
+
+The branch keeps BMI270 initialization deferred until after the sensor power rail is available. This avoids the earlier boot-time `device not ready` failure.
+
+Web test steps:
+
+1. Connect to `OpenEarable-XXXX` from the Web Bluetooth page.
+2. In `Sensor Stream`, select `IMU`.
+3. Use `Rate Index = 1`.
+4. Click `Enable Stream`.
+5. Click `Start IMU`.
+6. `Packets` should increase and accelerometer/gyro values should update when the board moves.
+
+If packets stay at zero, verify that the firmware is the current `48khz` branch build and that the page is connected to the GATT data notification characteristic.
+
+## 48 kHz PCM16 Audio Preview
+
+The audio preview path is:
+
+```text
+SPH0641LU4H-1 digital microphone -> ADAU1860 PDM/DMIC input -> ADAU1860 I2S output -> nRF5340 I2S RX -> BLE Audio Waveform Service -> Web UI
+```
+
+The BLE waveform service is a diagnostic preview channel. It is not a full continuous audio recorder.
+
+Current packet format:
+
+```text
+PCM format: signed PCM16 mono preview
+PCM source rate: 48,000 Hz
+BLE characteristic: Audio Waveform Data
+Service UUID: 1410dfa0-5f68-4ebb-a7c7-5e0fb9ae7557
+```
+
+The Web UI supports four windows:
+
+| Mode | Source PCM frames | Display points | Effective plot rate | Intended use |
+| --- | ---: | ---: | ---: | --- |
+| `2 ms raw` | 96 | 96 | 48 kHz | high-frequency local shape |
+| `10 ms mid` | 480 | 480 | 48 kHz | 300 Hz to several kHz, raw point display |
+| `50 ms low` | 2400 | 480 | 9.6 kHz | low-frequency trend and stable frequency estimate |
+| `100 ms low` | 4800 | 480 | 4.8 kHz | very low-frequency trend |
+
+Important display behavior:
+
+- `2 ms raw` and `10 ms mid` do not decimate; displayed samples are raw PCM16 points from the preview window.
+- `50 ms low` averages every 5 PCM points into one display point.
+- `100 ms low` averages every 10 PCM points into one display point.
+- The canvas currently shows an AC-coupled, auto-scaled waveform. This is useful for seeing shape and frequency, but it is not fixed-scale amplitude display.
+- Use the numeric `Peak`, `Mean Abs`, and `Peak-to-Peak` values to judge actual raw amplitude.
+
+Typical interpretation:
+
+```text
+Silence / room noise:
+Peak around 400-600 raw
+Peak-to-Peak around 800-1200 raw
+
+Reliable external tone:
+Peak should preferably exceed 1500 raw
+Peak-to-Peak should preferably exceed 3000 raw
+```
+
+For 400 Hz to 2 kHz tones, start with `10 ms mid`. For 100 Hz to 300 Hz tones, use `50 ms low` or `100 ms low`, but remember those modes are decimated previews.
+
+## Known Limitations
+
+- The Web Audio Waveform panel is a BLE diagnostic preview, not a lossless audio capture tool.
+- The canvas uses AC removal and auto gain, so quiet noise can look visually large.
+- The frequency estimator is unreliable when the signal is close to the noise floor.
+- The 96 kHz experiment branch did not solve low-frequency display quality; this branch stays on 48 kHz and improves the preview windowing instead.
+- True raw long-window audio capture should use SD card, USB, RTT, or a dedicated streaming protocol instead of this BLE preview characteristic.
+
+## Useful Files
+
+```text
+prj.conf
+boards/teco/openearable_v2/openearable_v2_nrf5340_cpuapp_common.dts
+src/SensorManager/IMU.cpp
+src/bluetooth/gatt_services/audio_waveform_service.c
+src/bluetooth/gatt_services/audio_waveform_service.h
+src/audio/audio_datapath.c
+tools/openearable-web-bluetooth/index.html
+tools/openearable-web-bluetooth/app.js
+tools/openearable-web-bluetooth/server.js
+```
+
+## Development Rule
+
+For this branch, prefer small, testable changes:
+
+1. Keep `prj.conf` as the default debug build configuration.
+2. Keep Web Bluetooth legacy advertising enabled unless deliberately testing phone-only behavior.
+3. Do not reintroduce the 96 kHz configuration into the `48khz` branch.
+4. Validate IMU and audio preview separately after each firmware change.
+5. When changing waveform transport, keep the Web UI packet parser in sync with `audio_waveform_packet`.

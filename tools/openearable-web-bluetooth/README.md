@@ -1,44 +1,40 @@
-# OpenEarable BLE Console
+﻿# OpenEarable Web Bluetooth Console
 
-Local Web Bluetooth console for OpenEarable v2.
+Static Web Bluetooth console for the `48khz` branch.
 
-Run:
+Run from this directory:
 
 ```powershell
 node server.js --port=8766
 ```
 
-Open:
+Open Chrome or Edge:
 
 ```text
 http://127.0.0.1:8766/
 ```
 
-Use Chrome or Edge on a machine with a Bluetooth adapter. Web Bluetooth requires a secure context; `localhost` and `127.0.0.1` are accepted by Chromium browsers.
+The page connects to the OpenEarable GATT services. It is not an advertisement-only scanner.
 
-IMU quick test:
+## IMU
 
-1. Click `Connect OpenEarable` and select `OpenEarable-XXXX`.
-2. Click `Read Battery` to read Battery Service `180F` / Battery Level `2A19`.
-3. Click `Start IMU`. The page subscribes to Sensor Data Notify and writes `00 01 01` to Sensor Config.
-4. Move the board and watch `Accel` / `Gyro` values update. `Mag` remains zero unless the BMM150 AUX path is implemented in firmware.
-5. Click `Stop IMU` to write `00 01 00`.
+1. Connect to `OpenEarable-XXXX`.
+2. Select `IMU` in `Sensor Stream`.
+3. Use `Rate Index = 1`.
+4. Click `Enable Stream` and `Start IMU`.
+5. `Packets` should increase and accel/gyro values should update.
 
-Sensor packets are GATT notifications, not advertisement data. Advertisement scanning only confirms that the device is visible and advertising.
+## Audio Waveform
 
-Audio waveform quick test:
+1. Flash the `48khz` branch with `prj.conf` and `build_48khz_pcm16`.
+2. Connect from the page.
+3. In `Audio Waveform`, select a window:
+   - `2 ms raw`: 96 PCM16 samples, no decimation.
+   - `10 ms mid`: 480 PCM16 samples, no decimation.
+   - `50 ms low`: 2400 PCM frames represented as 480 averaged points.
+   - `100 ms low`: 4800 PCM frames represented as 480 averaged points.
+4. Click `Start Wave`.
 
-1. Build and flash firmware that includes `Audio Waveform Service` UUID `1410dfa0-5f68-4ebb-a7c7-5e0fb9ae7557`.
-2. Connect from this page and confirm the service list contains `Audio Waveform Service`.
-3. Click `Start Wave`. The page subscribes to waveform notifications, writes `03` to `Audio Waveform Control`, then writes `02 00 02` to `Sensor Config` to start the microphone/audio datapath.
-4. Watch the `Audio Waveform` canvas and `Peak` / `Mean Abs` metrics. A moving waveform means ADAU1860 DMIC to nRF I2S RX to BLE preview is producing audio samples.
-5. Click `Stop Wave` to write `00` to waveform control and `02 00 00` to stop the microphone path.
+The waveform service sends PCM16 preview chunks over BLE. It is useful for checking the ADAU1860/I2S microphone path, but it is not a full continuous audio recorder.
 
-The waveform channel is a low-rate preview. It sends compact signed 8-bit waveform snapshots over GATT Notify, not full-quality PCM audio.
-
-Expected OpenEarable names:
-
-- Normal firmware: `OpenEarable-XXXX`
-- DFU mode: `OpenEarable_L_DFU` or `OpenEarable_R_DFU`
-
-If no scanner can see the device after a mass erase flash, write the channel and hardware revision UICR values again, reset the board, and then scan.
+The canvas uses AC removal and auto gain. Use the numeric `Peak`, `Mean Abs`, and `Peak-to-Peak` values when judging actual amplitude.

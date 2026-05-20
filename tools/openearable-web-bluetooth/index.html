@@ -81,6 +81,7 @@
               <option value="4">PPG</option>
               <option value="6">Optical Temp</option>
               <option value="7">Bone Conduct.</option>
+              <option value="8">Thermal IR</option>
             </select>
           </div>
           <div class="form-row">
@@ -281,7 +282,75 @@
         </div>
         <pre id="log"></pre>
       </section>
+
+      <section class="panel thermal-panel">
+        <div class="panel-head">
+          <h2>Thermal IR Camera</h2>
+          <span id="thermalState" class="fine">Stream off</span>
+        </div>
+        <canvas id="thermalCanvas" class="thermal-canvas" width="384" height="288"></canvas>
+        <div class="form-row">
+          <label for="thermalRateIndex">Refresh</label>
+          <select id="thermalRateIndex">
+            <option value="0">2 Hz</option>
+            <option value="1" selected>4 Hz</option>
+            <option value="2">8 Hz</option>
+          </select>
+          <label for="thermalPalette">Palette</label>
+          <select id="thermalPalette">
+            <option value="iron" selected>Iron</option>
+            <option value="jet">Jet</option>
+            <option value="gray">Grayscale</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label for="thermalAutoScale">Auto Range</label>
+          <input id="thermalAutoScale" type="checkbox" checked>
+          <label for="thermalMinTemp">Min &deg;C</label>
+          <input id="thermalMinTemp" type="number" value="20" step="1" style="width:6em">
+          <label for="thermalMaxTemp">Max &deg;C</label>
+          <input id="thermalMaxTemp" type="number" value="40" step="1" style="width:6em">
+        </div>
+        <div class="button-row">
+          <button id="startThermalBtn" type="button" disabled>Start Thermal</button>
+          <button id="stopThermalBtn" type="button" disabled>Stop Thermal</button>
+        </div>
+        <div class="metric-grid thermal-metrics">
+          <div>
+            <span class="metric-label">Frames</span>
+            <strong id="thermalFrames">0</strong>
+          </div>
+          <div>
+            <span class="metric-label">FPS</span>
+            <strong id="thermalFps">-</strong>
+          </div>
+          <div>
+            <span class="metric-label">Chunks</span>
+            <strong id="thermalChunks">0/43</strong>
+          </div>
+          <div>
+            <span class="metric-label">Min &deg;C</span>
+            <strong id="thermalMin">-</strong>
+          </div>
+          <div>
+            <span class="metric-label">Max &deg;C</span>
+            <strong id="thermalMax">-</strong>
+          </div>
+          <div>
+            <span class="metric-label">Avg &deg;C</span>
+            <strong id="thermalAvg">-</strong>
+          </div>
+          <div>
+            <span class="metric-label">Dropped</span>
+            <strong id="thermalDropped">0</strong>
+          </div>
+          <div>
+            <span class="metric-label">Last Frame</span>
+            <strong id="thermalLastTime">-</strong>
+          </div>
+        </div>
+      </section>
     </main>
-    <script src="app.js?v=20260512-48khz-lowfreq-pcm16" type="module"></script>
+    <script src="app.js?v=20260520-thermal-ir" type="module"></script>
   </body>
 </html>

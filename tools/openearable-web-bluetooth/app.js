@@ -76,7 +76,8 @@ const SENSOR_NAMES = new Map([
   [4, 'PPG'],
   [5, 'PulseOx'],
   [6, 'Optical Temp'],
-  [7, 'Bone Conduct.']
+  [7, 'Bone Conduct.'],
+  [8, 'Thermal IR']
 ]);
 
 const IMU_SENSOR_ID = 0;
@@ -89,6 +90,17 @@ const AUDIO_WAVE_CONTROL_ENABLE = 0x01;
 const AUDIO_WAVE_CONTROL_RESET = 0x02;
 const AUDIO_WAVE_WINDOW_SHIFT = 2;
 const AUDIO_SAMPLE_FORMAT_PCM16 = 1;
+
+// Thermal IR (MLX90642) constants. Must match the firmware in
+// src/SensorManager/Thermal.{h,cpp} and the chunk header layout.
+const THERMAL_SENSOR_ID = 8;
+const THERMAL_SAMPLE_RATE_INDEX = 1; // default 4 Hz
+const THERMAL_NUM_COLS = 32;
+const THERMAL_NUM_ROWS = 24;
+const THERMAL_NUM_PIXELS = THERMAL_NUM_COLS * THERMAL_NUM_ROWS;
+const THERMAL_PIXELS_PER_CHUNK = 18;
+const THERMAL_TOTAL_CHUNKS = Math.ceil(THERMAL_NUM_PIXELS / THERMAL_PIXELS_PER_CHUNK);
+const THERMAL_RAW_TO_C = 1 / 50; // raw int16 / 50 = degrees Celsius
 
 const els = {
   browserState: document.querySelector('#browserState'),
@@ -154,7 +166,24 @@ const els = {
   audioFrequencyConfidence: document.querySelector('#audioFrequencyConfidence'),
   audioPlotScale: document.querySelector('#audioPlotScale'),
   audioPacketInfo: document.querySelector('#audioPacketInfo'),
-  audioWaveCanvas: document.querySelector('#audioWaveCanvas')
+  audioWaveCanvas: document.querySelector('#audioWaveCanvas'),
+  thermalCanvas: document.querySelector('#thermalCanvas'),
+  thermalState: document.querySelector('#thermalState'),
+  thermalRateIndex: document.querySelector('#thermalRateIndex'),
+  thermalPalette: document.querySelector('#thermalPalette'),
+  thermalAutoScale: document.querySelector('#thermalAutoScale'),
+  thermalMinTemp: document.querySelector('#thermalMinTemp'),
+  thermalMaxTemp: document.querySelector('#thermalMaxTemp'),
+  startThermalBtn: document.querySelector('#startThermalBtn'),
+  stopThermalBtn: document.querySelector('#stopThermalBtn'),
+  thermalFrames: document.querySelector('#thermalFrames'),
+  thermalFps: document.querySelector('#thermalFps'),
+  thermalChunks: document.querySelector('#thermalChunks'),
+  thermalMin: document.querySelector('#thermalMin'),
+  thermalMax: document.querySelector('#thermalMax'),
+  thermalAvg: document.querySelector('#thermalAvg'),
+  thermalDropped: document.querySelector('#thermalDropped'),
+  thermalLastTime: document.querySelector('#thermalLastTime')
 };
 
 let device = null;
@@ -177,6 +206,19 @@ let lastAudioPeak = 0;
 let lastAudioDurationMs = 0;
 let lastAudioPointRate = 0;
 let audioWindowAssembly = null;
+
+// Thermal IR streaming state. The frame buffer holds raw int16 values from
+// the MLX90642 (raw / 50 = degrees Celsius); we render the most recent
+// fully-assembled frame to the canvas.
+const thermalFrameRaw = new Int16Array(THERMAL_NUM_PIXELS);
+const thermalChunkReceived = new Uint8Array(THERMAL_TOTAL_CHUNKS);
+let thermalCurrentFrameTime = null;
+let thermalFramesRendered = 0;
+let thermalDroppedFrames = 0;
+let thermalChunksThisFrame = 0;
+let thermalLastFpsSampleAt = 0;
+let thermalFramesAtLastSample = 0;
+let thermalNotifyEnabled = false;
 
 function setStatus(text, state = 'neutral') {
   els.linkState.textContent = text;
@@ -294,6 +336,12 @@ function setConnectedUi(isConnected) {
   els.disableSensorBtn.disabled = !isConnected || !sensorConfigChar;
   els.subscribeSensorBtn.disabled = !isConnected || !sensorDataChar;
   els.subscribeStatusBtn.disabled = !isConnected || !sensorStatusChar;
+  if (els.startThermalBtn) {
+    els.startThermalBtn.disabled = !isConnected || !sensorConfigChar || !sensorDataChar;
+  }
+  if (els.stopThermalBtn) {
+    els.stopThermalBtn.disabled = !isConnected || !sensorConfigChar;
+  }
   els.gattState.textContent = isConnected ? 'GATT connected' : 'GATT disconnected';
 }
 
@@ -314,6 +362,7 @@ function resetConnectionState() {
   els.lastPayload.textContent = '-';
   resetImuValues();
   resetAudioWaveformValues();
+  resetThermalValues();
   els.notifyState.textContent = 'Notifications off';
   els.deviceName.textContent = 'No device';
   els.factName.textContent = '-';
@@ -873,6 +922,13 @@ function decodeSensorPacket(value) {
     }
   }
 
+  if (id === THERMAL_SENSOR_ID) {
+    const thermalText = decodeThermalChunk(value, payloadLength, time);
+    if (thermalText) {
+      return `id=${id} ${sensorName} size=${size} time=${time} ${thermalText}`;
+    }
+  }
+
   return `id=${id} ${sensorName} size=${size} time=${time} payload=${hex}`;
 }
 
@@ -899,6 +955,253 @@ function decodeImuPayload(packetView, payloadLength, time) {
   els.imuMz.textContent = formatNumber(mz);
 
   return `accel=[${formatNumber(ax)}, ${formatNumber(ay)}, ${formatNumber(az)}] gyro=[${formatNumber(gx)}, ${formatNumber(gy)}, ${formatNumber(gz)}] mag=[${formatNumber(mx)}, ${formatNumber(my)}, ${formatNumber(mz)}]`;
+}
+
+function resetThermalAssembly() {
+  thermalChunkReceived.fill(0);
+  thermalChunksThisFrame = 0;
+}
+
+function thermalPaletteColor(t, lo, hi, paletteName) {
+  if (!Number.isFinite(t)) {
+    return [0, 0, 0];
+  }
+  const span = hi - lo;
+  let u = span > 0 ? (t - lo) / span : 0.5;
+  if (u < 0) u = 0;
+  else if (u > 1) u = 1;
+
+  switch (paletteName) {
+    case 'gray': {
+      const g = Math.round(u * 255);
+      return [g, g, g];
+    }
+    case 'jet': {
+      // Classic jet: blue -> cyan -> green -> yellow -> red.
+      const r = Math.round(255 * Math.max(0, Math.min(1, 1.5 - Math.abs(4 * u - 3))));
+      const g = Math.round(255 * Math.max(0, Math.min(1, 1.5 - Math.abs(4 * u - 2))));
+      const b = Math.round(255 * Math.max(0, Math.min(1, 1.5 - Math.abs(4 * u - 1))));
+      return [r, g, b];
+    }
+    case 'iron':
+    default: {
+      // Iron-bow style: black -> purple -> red -> orange -> yellow -> white.
+      const r = Math.round(255 * Math.min(1, 1.5 * u));
+      const g = Math.round(255 * Math.max(0, Math.min(1, 1.5 * u - 0.5)));
+      const b = Math.round(255 * (u < 0.33
+        ? 1.5 * u
+        : u < 0.66
+          ? 1 - 2.5 * (u - 0.33)
+          : Math.max(0, 0.5 * (u - 0.66) / 0.34)));
+      return [r, g, b];
+    }
+  }
+}
+
+function renderThermalFrame() {
+  const canvas = els.thermalCanvas;
+  if (!canvas) {
+    return;
+  }
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    return;
+  }
+
+  let lo;
+  let hi;
+  let minPixel = Infinity;
+  let maxPixel = -Infinity;
+  let sum = 0;
+
+  // First pass to gather statistics in degrees C.
+  for (let i = 0; i < THERMAL_NUM_PIXELS; i++) {
+    const t = thermalFrameRaw[i] * THERMAL_RAW_TO_C;
+    if (t < minPixel) minPixel = t;
+    if (t > maxPixel) maxPixel = t;
+    sum += t;
+  }
+  const avg = sum / THERMAL_NUM_PIXELS;
+
+  if (els.thermalAutoScale?.checked) {
+    lo = minPixel;
+    hi = maxPixel;
+    if (hi - lo < 0.5) {
+      hi = lo + 0.5;
+    }
+  } else {
+    lo = Number.parseFloat(els.thermalMinTemp?.value ?? '20');
+    hi = Number.parseFloat(els.thermalMaxTemp?.value ?? '40');
+    if (!Number.isFinite(lo)) lo = 20;
+    if (!Number.isFinite(hi)) hi = 40;
+    if (hi <= lo) hi = lo + 1;
+  }
+
+  const paletteName = els.thermalPalette?.value ?? 'iron';
+
+  // Draw at native sensor resolution into an offscreen ImageData buffer,
+  // then upscale with the canvas to fit the display.
+  if (canvas.width !== THERMAL_NUM_COLS * 12) {
+    canvas.width = THERMAL_NUM_COLS * 12;
+    canvas.height = THERMAL_NUM_ROWS * 12;
+  }
+  const small = document.createElement('canvas');
+  small.width = THERMAL_NUM_COLS;
+  small.height = THERMAL_NUM_ROWS;
+  const smallCtx = small.getContext('2d');
+  const image = smallCtx.createImageData(THERMAL_NUM_COLS, THERMAL_NUM_ROWS);
+
+  for (let row = 0; row < THERMAL_NUM_ROWS; row++) {
+    for (let col = 0; col < THERMAL_NUM_COLS; col++) {
+      const idx = row * THERMAL_NUM_COLS + col;
+      const t = thermalFrameRaw[idx] * THERMAL_RAW_TO_C;
+      const [r, g, b] = thermalPaletteColor(t, lo, hi, paletteName);
+      const pix = idx * 4;
+      image.data[pix] = r;
+      image.data[pix + 1] = g;
+      image.data[pix + 2] = b;
+      image.data[pix + 3] = 255;
+    }
+  }
+  smallCtx.putImageData(image, 0, 0);
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(small, 0, 0, canvas.width, canvas.height);
+
+  // Update metrics + FPS.
+  thermalFramesRendered += 1;
+  els.thermalFrames.textContent = String(thermalFramesRendered);
+  els.thermalMin.textContent = `${minPixel.toFixed(1)}`;
+  els.thermalMax.textContent = `${maxPixel.toFixed(1)}`;
+  els.thermalAvg.textContent = `${avg.toFixed(1)}`;
+  els.thermalLastTime.textContent = thermalCurrentFrameTime != null
+    ? `${(Number(thermalCurrentFrameTime) / 1e6).toFixed(2)} s`
+    : '-';
+
+  const now = performance.now();
+  if (thermalLastFpsSampleAt === 0) {
+    thermalLastFpsSampleAt = now;
+    thermalFramesAtLastSample = thermalFramesRendered;
+  } else if (now - thermalLastFpsSampleAt >= 1000) {
+    const frames = thermalFramesRendered - thermalFramesAtLastSample;
+    const seconds = (now - thermalLastFpsSampleAt) / 1000;
+    els.thermalFps.textContent = (frames / seconds).toFixed(1);
+    thermalLastFpsSampleAt = now;
+    thermalFramesAtLastSample = thermalFramesRendered;
+  }
+}
+
+function decodeThermalChunk(value, payloadLength, time) {
+  if (payloadLength < 2) {
+    return null;
+  }
+
+  const chunkIdx = value.getUint8(10);
+  const count = value.getUint8(11);
+  const expectedBytes = 2 + count * 2;
+  if (count === 0 || expectedBytes > payloadLength) {
+    return `bad thermal chunk idx=${chunkIdx} count=${count} payload=${payloadLength}B`;
+  }
+
+  // Detect a new frame: either the timestamp moved on or the chunk index
+  // wrapped back to zero. The firmware tags every chunk of one frame with
+  // the same microsecond timestamp.
+  if (thermalCurrentFrameTime !== time) {
+    // If the previous frame did not complete, count it as a drop.
+    if (thermalCurrentFrameTime !== null && thermalChunksThisFrame < THERMAL_TOTAL_CHUNKS) {
+      thermalDroppedFrames += 1;
+      els.thermalDropped.textContent = String(thermalDroppedFrames);
+    }
+    thermalCurrentFrameTime = time;
+    resetThermalAssembly();
+  }
+
+  if (chunkIdx >= THERMAL_TOTAL_CHUNKS) {
+    return `bad thermal chunk idx=${chunkIdx} (max ${THERMAL_TOTAL_CHUNKS - 1})`;
+  }
+
+  const start = chunkIdx * THERMAL_PIXELS_PER_CHUNK;
+  for (let i = 0; i < count; i++) {
+    const dst = start + i;
+    if (dst >= THERMAL_NUM_PIXELS) break;
+    // Each pixel is little-endian int16 in the BLE payload.
+    thermalFrameRaw[dst] = value.getInt16(12 + i * 2, true);
+  }
+
+  if (!thermalChunkReceived[chunkIdx]) {
+    thermalChunkReceived[chunkIdx] = 1;
+    thermalChunksThisFrame += 1;
+  }
+  els.thermalChunks.textContent = `${thermalChunksThisFrame}/${THERMAL_TOTAL_CHUNKS}`;
+
+  if (thermalChunksThisFrame >= THERMAL_TOTAL_CHUNKS) {
+    renderThermalFrame();
+    resetThermalAssembly();
+    // Mark the current frame as "consumed" so the next packet (with a new
+    // timestamp) is treated as a fresh frame, not as a dropped continuation.
+    thermalCurrentFrameTime = null;
+  }
+
+  return `chunk=${chunkIdx} count=${count} progress=${thermalChunksThisFrame}/${THERMAL_TOTAL_CHUNKS}`;
+}
+
+function resetThermalValues() {
+  thermalFrameRaw.fill(0);
+  resetThermalAssembly();
+  thermalCurrentFrameTime = null;
+  thermalFramesRendered = 0;
+  thermalDroppedFrames = 0;
+  thermalLastFpsSampleAt = 0;
+  thermalFramesAtLastSample = 0;
+  thermalNotifyEnabled = false;
+  if (els.thermalFrames) els.thermalFrames.textContent = '0';
+  if (els.thermalFps) els.thermalFps.textContent = '-';
+  if (els.thermalChunks) els.thermalChunks.textContent = `0/${THERMAL_TOTAL_CHUNKS}`;
+  if (els.thermalMin) els.thermalMin.textContent = '-';
+  if (els.thermalMax) els.thermalMax.textContent = '-';
+  if (els.thermalAvg) els.thermalAvg.textContent = '-';
+  if (els.thermalDropped) els.thermalDropped.textContent = '0';
+  if (els.thermalLastTime) els.thermalLastTime.textContent = '-';
+  if (els.thermalState) els.thermalState.textContent = 'Stream off';
+  const canvas = els.thermalCanvas;
+  if (canvas) {
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#101512';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+}
+
+async function startThermalStream() {
+  const rateIdxRaw = Number.parseInt(els.thermalRateIndex?.value ?? String(THERMAL_SAMPLE_RATE_INDEX), 10);
+  const sampleRateIndex = Number.isFinite(rateIdxRaw) ? rateIdxRaw & 0xff : THERMAL_SAMPLE_RATE_INDEX;
+  els.sensorId.value = String(THERMAL_SENSOR_ID);
+  els.sampleRateIndex.value = String(sampleRateIndex);
+
+  const notifyReady = await setSensorDataNotify(true);
+  if (!notifyReady) {
+    return;
+  }
+  thermalNotifyEnabled = true;
+
+  resetThermalAssembly();
+  thermalCurrentFrameTime = null;
+
+  const written = await writeSensorConfigPayload(THERMAL_SENSOR_ID, sampleRateIndex, STORAGE_STREAMING);
+  if (written) {
+    els.thermalState.textContent = `Streaming @ idx ${sampleRateIndex}`;
+    log('Thermal IR stream requested. Watch the heatmap below.');
+  }
+}
+
+async function stopThermalStream() {
+  els.sensorId.value = String(THERMAL_SENSOR_ID);
+  els.sampleRateIndex.value = String(THERMAL_SAMPLE_RATE_INDEX);
+  await writeSensorConfigPayload(THERMAL_SENSOR_ID, THERMAL_SAMPLE_RATE_INDEX, 0x00);
+  els.thermalState.textContent = 'Stream off';
+  thermalNotifyEnabled = false;
 }
 
 function decodeSensorConfigStatus(value) {
@@ -1396,8 +1699,40 @@ els.disableSensorBtn.addEventListener('click', () => writeSensorConfig(false));
 els.subscribeSensorBtn.addEventListener('click', toggleSensorDataNotify);
 els.subscribeStatusBtn.addEventListener('click', toggleSensorStatusNotify);
 
+if (els.startThermalBtn) {
+  els.startThermalBtn.addEventListener('click', () => {
+    startThermalStream().catch((error) => log(`Thermal start failed: ${error.message}`));
+  });
+}
+if (els.stopThermalBtn) {
+  els.stopThermalBtn.addEventListener('click', () => {
+    stopThermalStream().catch((error) => log(`Thermal stop failed: ${error.message}`));
+  });
+}
+if (els.thermalAutoScale) {
+  els.thermalAutoScale.addEventListener('change', () => {
+    if (thermalFramesRendered > 0) renderThermalFrame();
+  });
+}
+if (els.thermalMinTemp) {
+  els.thermalMinTemp.addEventListener('change', () => {
+    if (thermalFramesRendered > 0 && !els.thermalAutoScale.checked) renderThermalFrame();
+  });
+}
+if (els.thermalMaxTemp) {
+  els.thermalMaxTemp.addEventListener('change', () => {
+    if (thermalFramesRendered > 0 && !els.thermalAutoScale.checked) renderThermalFrame();
+  });
+}
+if (els.thermalPalette) {
+  els.thermalPalette.addEventListener('change', () => {
+    if (thermalFramesRendered > 0) renderThermalFrame();
+  });
+}
+
 resetFacts();
 resetAudioWaveformValues();
+resetThermalValues();
 setConnectedUi(false);
 checkSupport();
 window.addEventListener('resize', () => drawAudioWaveform(lastAudioSamples, {

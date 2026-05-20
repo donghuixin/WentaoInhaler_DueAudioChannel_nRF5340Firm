@@ -1,4 +1,4 @@
-﻿# OpenEarable 48 kHz PCM16 Development Branch
+﻿# OpenEarable 48 kHz PCM16 + Thermal IR Development Branch
 
 This branch is a working OpenEarable firmware and Web Bluetooth setup for the current hardware bring-up. It is not the upstream OpenEarable 2 README. The focus of this branch is:
 
@@ -6,19 +6,27 @@ This branch is a working OpenEarable firmware and Web Bluetooth setup for the cu
 - 48 kHz PCM16 audio preview from the ADAU1860/I2S path
 - Web Bluetooth connection from Chrome/Edge on Windows
 - IMU streaming with the BMI270-compatible board wiring used in this project
+- MLX90642 32×24 thermal IR camera streaming over BLE (I2C1)
 - keeping the 48 kHz build usable while avoiding the previous 96 kHz experiment path
 
 ## Current Branch
 
-Use this branch:
+Use the thermal-enabled branch:
+
+```powershell
+git checkout HuixinThermal
+```
+
+Base branch (48 kHz audio only):
 
 ```powershell
 git checkout 48khz
 ```
 
-The branch is pushed to:
+Remote:
 
 ```text
+https://github.com/ljqljqljq8/OpenEarable/tree/HuixinThermal
 https://github.com/ljqljqljq8/OpenEarable/tree/48khz
 ```
 
@@ -27,7 +35,8 @@ Recent branch contents include:
 - `CONFIG_OPENEARABLE_WEB_BLE_LEGACY_ADV=y` so Windows/Chrome Web Bluetooth can discover the device.
 - BMI270 deferred initialization so the IMU is initialized after the sensor rail is powered.
 - `Audio Waveform Service` for PCM16 waveform preview over BLE GATT.
-- Web UI under `tools/openearable-web-bluetooth/` for IMU and audio waveform testing.
+- MLX90642 driver on I2C1 with chunked BLE thermal frame transport (`ID_THERMAL = 8`).
+- Web UI under `tools/openearable-web-bluetooth/` for IMU, audio waveform, and thermal IR heatmap testing.
 
 ## Required Toolchain
 
@@ -203,6 +212,61 @@ Peak-to-Peak should preferably exceed 3000 raw
 
 For 400 Hz to 2 kHz tones, start with `10 ms mid`. For 100 Hz to 300 Hz tones, use `50 ms low` or `100 ms low`, but remember those modes are decimated previews.
 
+## MLX90642 Thermal IR Camera
+
+The thermal path is:
+
+```text
+MLX90642 (32×24, 768 pixels) -> I2C1 (TWIM) -> Thermal sensor wrapper -> BLE Sensor Service -> Web UI heatmap
+```
+
+Hardware notes:
+
+- Sensor is on **I2C1** (`&i2c1` in the board DTS).
+- Default DTS 7-bit address is `0x33` (Arduino library `MLX90642_ADDR 0x66` is the 8-bit form).
+- If your module uses a different address, change `mlx90642@33` `reg` in `openearable_v2_nrf5340_cpuapp_common.dts`.
+- `Thermal::init()` enables both `ls_1_8` and `ls_3_3` (MLX90642 needs 3.0–3.6 V).
+- Allow up to ~3 minutes after power-on for thermal stabilization before expecting full accuracy.
+
+Driver layout (ported from the third-party Arduino MLX90642 v1.0.3 library):
+
+```text
+src/SensorManager/MLX90642/MLX90642.{h,cpp}   # Zephyr/TWIM register access + block read
+src/SensorManager/Thermal.{h,cpp}             # EdgeMlSensor wrapper, chunking, timer
+```
+
+Refresh rates (EEPROM `0x11F0` bits 0:2):
+
+| Rate index | MLX90642 code | Frame rate |
+| ---: | ---: | ---: |
+| 0 | 2 | 2 Hz |
+| 1 | 3 | 4 Hz (default) |
+| 2 | 4 | 8 Hz |
+| 3 | 5 | 16 Hz |
+
+BLE transport (sensor ID `8`, `ID_THERMAL`):
+
+Each thermal frame is split into **43 chunks** (18 pixels per chunk, last chunk 12 pixels). All chunks of one frame share the same `sensor_data.time` timestamp.
+
+Per-packet payload (after the 10-byte `sensor_data` header):
+
+```text
+[chunk_idx : u8][pixel_count : u8][int16 raw_pixel × pixel_count]
+```
+
+Raw pixel value: `temperature_celsius = raw / 50.0`
+
+Web test steps:
+
+1. Flash the `HuixinThermal` branch build.
+2. Connect from `http://127.0.0.1:8766/` (hard refresh with `Ctrl+F5` after updates).
+3. Scroll to the **Thermal IR Camera** panel at the bottom of the page.
+4. Select refresh rate (default **4 Hz**).
+5. Click **Start Thermal**.
+6. The 32×24 heatmap should update; metrics show FPS, Min/Max/Avg °C, and chunk progress (`43/43`).
+
+Alternatively, use the generic **Sensor Stream** controls: select `Thermal IR`, set rate index, **Enable Stream**, and **Subscribe Data**.
+
 ## Known Limitations
 
 - The Web Audio Waveform panel is a BLE diagnostic preview, not a lossless audio capture tool.
@@ -210,18 +274,26 @@ For 400 Hz to 2 kHz tones, start with `10 ms mid`. For 100 Hz to 300 Hz tones, u
 - The frequency estimator is unreliable when the signal is close to the noise floor.
 - The 96 kHz experiment branch did not solve low-frequency display quality; this branch stays on 48 kHz and improves the preview windowing instead.
 - True raw long-window audio capture should use SD card, USB, RTT, or a dedicated streaming protocol instead of this BLE preview characteristic.
+- Thermal IR at 8 Hz sends ~344 BLE packets/s (43 chunks × 8 frames); use 4 Hz for a safer margin on congested links.
+- The existing `MLX90632` skin-temperature sensor on I2C2 (`ID_OPTTEMP`) is unchanged; thermal IR is a separate sensor (`ID_THERMAL`).
 
 ## Useful Files
 
 ```text
 prj.conf
 boards/teco/openearable_v2/openearable_v2_nrf5340_cpuapp_common.dts
+include/openearable_common.h
 src/SensorManager/IMU.cpp
+src/SensorManager/MLX90642/MLX90642.{h,cpp}
+src/SensorManager/Thermal.{h,cpp}
+src/SensorManager/SensorManager.cpp
+src/ParseInfo/DefaultSensors.h
 src/bluetooth/gatt_services/audio_waveform_service.c
 src/bluetooth/gatt_services/audio_waveform_service.h
 src/audio/audio_datapath.c
 tools/openearable-web-bluetooth/index.html
 tools/openearable-web-bluetooth/app.js
+tools/openearable-web-bluetooth/style.css
 tools/openearable-web-bluetooth/server.js
 ```
 
@@ -231,6 +303,7 @@ For this branch, prefer small, testable changes:
 
 1. Keep `prj.conf` as the default debug build configuration.
 2. Keep Web Bluetooth legacy advertising enabled unless deliberately testing phone-only behavior.
-3. Do not reintroduce the 96 kHz configuration into the `48khz` branch.
-4. Validate IMU and audio preview separately after each firmware change.
+3. Do not reintroduce the 96 kHz configuration into the `48khz` / `HuixinThermal` branches.
+4. Validate IMU, audio preview, and thermal IR separately after each firmware change.
 5. When changing waveform transport, keep the Web UI packet parser in sync with `audio_waveform_packet`.
+6. When changing thermal chunk layout, keep `Thermal.cpp`, `app.js`, and this README in sync.

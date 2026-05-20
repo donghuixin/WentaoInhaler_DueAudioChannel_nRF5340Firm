@@ -11,6 +11,7 @@
 #include "Baro.h"
 #include "PPG.h"
 #include "Temp.h"
+#include "Thermal.h"
 #include "BoneConduction.h"
 #include "Microphone.h"
 
@@ -132,6 +133,7 @@ void stop_sensor_manager() {
 	IMU::sensor.stop();
 	PPG::sensor.stop();
 	Temp::sensor.stop();
+	Thermal::sensor.stop();
 	BoneConduction::sensor.stop();
 	Microphone::sensor.stop();
 
@@ -164,6 +166,8 @@ EdgeMlSensor * get_sensor(enum sensor_id id) {
 		return &(BoneConduction::sensor);
 	case ID_MICRO:
 		return &(Microphone::sensor);
+	case ID_THERMAL:
+		return &(Thermal::sensor);
 	default:
 		return NULL;
 	}

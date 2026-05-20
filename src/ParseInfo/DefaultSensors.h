@@ -10,6 +10,7 @@
 #include "../SensorManager/IMU.h"
 #include "../SensorManager/Baro.h"
 #include "../SensorManager/Temp.h"
+#include "../SensorManager/Thermal.h"
 #include "../SensorManager/BoneConduction.h"
 #include "../SensorManager/Microphone.h"
 
@@ -98,6 +99,19 @@ SensorComponentGroup opticTemperatureGroups[OPTIC_TEMP_GROUP_COUNT] = {
     { .name = "OPTICAL_TEMPERATURE_SENSOR", .componentCount = OPTIC_TEMP_COUNT, .components = opticTemperatureComponents },
 };
 
+// ============= Thermal IR camera (MLX90642 32x24) =============
+
+#define THERMAL_COMPONENT_COUNT 2
+SensorComponent thermalComponents[THERMAL_COMPONENT_COUNT] = {
+    { .name = "ChunkIdx",  .unit = "idx",   .parseType = PARSE_TYPE_UINT8 },
+    { .name = "PixelCount", .unit = "count", .parseType = PARSE_TYPE_UINT8 },
+};
+
+#define THERMAL_GROUP_COUNT 1
+SensorComponentGroup thermalGroups[THERMAL_GROUP_COUNT] = {
+    { .name = "THERMAL_IR", .componentCount = THERMAL_COMPONENT_COUNT, .components = thermalComponents },
+};
+
 // ============= Baro =============
 
 #define BARO_TEMP_COUNT 1
@@ -118,7 +132,7 @@ SensorComponentGroup baroGroups[BARO_GROUP_COUNT] = {
 
 // ============= Sensors =============
 
-#define SENSOR_COUNT 6
+#define SENSOR_COUNT 7
 SensorScheme defaultSensors[SENSOR_COUNT] = {
     {
         .name = "9-Axis IMU",
@@ -210,11 +224,26 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
             },
         }, 
     },
+    {
+        .name = "Thermal IR Camera",
+        .id = ID_THERMAL,
+        .groupCount = THERMAL_GROUP_COUNT,
+        .groups = thermalGroups,
+        .configOptions = {
+            .availableOptions = DATA_STREAMING | DATA_STORAGE | FREQUENCIES_DEFINED,
+            .frequencyOptions = {
+                .frequencyCount = sizeof(Thermal::sample_rates.reg_vals),
+                .defaultFrequencyIndex = 1, // 4 Hz default keeps BLE load manageable
+                .maxBleFrequencyIndex = 2,  // 8 Hz max via BLE
+                .frequencies = Thermal::sample_rates.sample_rates,
+            },
+        },
+    },
 };
 
 ParseInfoScheme defaultSensorIds = {
     .sensorCount = SENSOR_COUNT,
-    .sensorIds = (uint8_t[]){ ID_IMU, ID_PPG, ID_OPTTEMP, ID_TEMP_BARO, ID_BONE_CONDUCTION, ID_MICRO },
+    .sensorIds = (uint8_t[]){ ID_IMU, ID_PPG, ID_OPTTEMP, ID_TEMP_BARO, ID_BONE_CONDUCTION, ID_MICRO, ID_THERMAL },
 };
 
 #endif // _DEFAULT_SENSORS_H

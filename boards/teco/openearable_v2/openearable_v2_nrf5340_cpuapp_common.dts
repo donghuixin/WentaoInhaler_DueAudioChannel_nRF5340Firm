@@ -135,6 +135,15 @@
 		 reg = <0x64>;
 		 enable-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
 	 };
+
+	 /* MLX90642 32x24 thermal IR array (driven by src/SensorManager/MLX90642).
+	  * The third-party Arduino library defines `MLX90642_ADDR 0x66`, which
+	  * is the 8-bit form. In Zephyr we use the 7-bit form (0x66 >> 1 = 0x33).
+	  */
+	 mlx90642: mlx90642@33 {
+		 compatible = "i2c-device";
+		 reg = <0x33>;
+	 };
  };
  
  &i2c2 {

@@ -34,8 +34,11 @@
             <span id="gattState" class="fine">GATT disconnected</span>
           </div>
           <dl class="facts">
-            <div><dt>Battery</dt><dd id="factBattery">-</dd></div>
+            <div><dt>Name</dt><dd id="factName">-</dd></div>
             <div><dt>Browser ID</dt><dd id="factId">-</dd></div>
+            <div><dt>Battery</dt><dd id="factBattery">-</dd></div>
+            <div><dt>Identifier</dt><dd id="factIdentifier">-</dd></div>
+            <div><dt>Generation</dt><dd id="factGeneration">-</dd></div>
             <div><dt>Firmware</dt><dd id="factFirmware">-</dd></div>
             <div><dt>Audio Channel</dt><dd id="factAudioChannel">-</dd></div>
           </dl>
@@ -183,10 +186,13 @@
           <div class="metric-grid">
             <div><span class="metric-label">Seq</span><strong id="audioSeq">-</strong></div>
             <div><span class="metric-label">Rate</span><strong id="audioRate">-</strong></div>
+            <div><span class="metric-label">Sample Interval</span><strong id="audioSampleInterval">-</strong></div>
             <div><span class="metric-label">Frames</span><strong id="audioFrames">-</strong></div>
             <div><span class="metric-label">Peak</span><strong id="audioPeak">-</strong></div>
             <div><span class="metric-label">Mean Abs</span><strong id="audioMean">-</strong></div>
             <div><span class="metric-label">Frequency</span><strong id="audioFrequency">-</strong></div>
+            <div><span class="metric-label">Samples/Cycle</span><strong id="audioSamplesPerCycle">-</strong></div>
+            <div><span class="metric-label">Peak-to-Peak</span><strong id="audioPeakToPeak">-</strong></div>
             <div><span class="metric-label">Estimate</span><strong id="audioFrequencyConfidence">-</strong></div>
             <div><span class="metric-label">Plot Scale</span><strong id="audioPlotScale">-</strong></div>
             <div><span class="metric-label">Packet Info</span><strong id="audioPacketInfo">-</strong></div>
@@ -203,6 +209,24 @@
             </div>
           </div>
           <pre id="log"></pre>
+        </article>
+
+        <!-- DISCOVERY SERVICES & ADVERTISEMENTS -->
+        <article class="glass-panel panel" style="grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+          <div>
+            <div class="panel-head">
+              <h3>Services</h3>
+              <span id="serviceCount" class="fine">0 found</span>
+            </div>
+            <div id="servicesList" style="font-size: 13px; color: var(--text-muted); max-height: 150px; overflow-y: auto;"></div>
+          </div>
+          <div>
+            <div class="panel-head">
+              <h3>Advertisements</h3>
+              <span id="scanState" class="fine">Not scanning</span>
+            </div>
+            <div id="advertisements" style="font-size: 13px; color: var(--text-muted); max-height: 150px; overflow-y: auto;"></div>
+          </div>
         </article>
 
         <!-- HARDWARE STATUS PANEL -->
@@ -247,21 +271,6 @@
       </div>
 
     </main>
-    
-    <!-- Hide the advert/services panel elements but keep them in DOM for JS compatibility -->
-    <div style="display:none;">
-      <span id="factName">-</span>
-      <span id="factIdentifier">-</span>
-      <span id="factGeneration">-</span>
-      <span id="serviceCount">-</span>
-      <div id="servicesList"></div>
-      <span id="scanState">-</span>
-      <div id="advertisements"></div>
-      <span id="audioSampleInterval">-</span>
-      <span id="audioSamplesPerCycle">-</span>
-      <span id="audioPeakToPeak">-</span>
-    </div>
-
     <script src="app.js?v=20260528-promax" type="module"></script>
   </body>
 </html>

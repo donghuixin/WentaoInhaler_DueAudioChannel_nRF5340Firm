@@ -222,7 +222,7 @@ let audioWindowAssembly = null;
 // the MLX90642 (raw / 50 = degrees Celsius); we render the most recent
 // fully-assembled frame to the canvas.
 const thermalFrameRaw = new Int16Array(THERMAL_NUM_PIXELS);
-const thermalChunkReceived = new Uint8Array(THERMAL_TOTAL_CHUNKS);
+const thermalChunkReceived = new Uint8Array(thermalTotalChunks);
 let thermalCurrentFrameTime = null;
 let thermalFramesRendered = 0;
 let thermalDroppedFrames = 0;

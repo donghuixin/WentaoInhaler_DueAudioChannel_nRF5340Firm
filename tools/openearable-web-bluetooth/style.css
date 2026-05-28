@@ -43,7 +43,8 @@ body {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   display: flex; 
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* Sidebar Layout */
@@ -62,7 +63,7 @@ body {
   flex: 1;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-  grid-auto-rows: minmax(300px, auto);
+  grid-auto-rows: minmax(420px, max-content);
   gap: 20px;
   overflow-y: auto;
   padding-right: 5px;

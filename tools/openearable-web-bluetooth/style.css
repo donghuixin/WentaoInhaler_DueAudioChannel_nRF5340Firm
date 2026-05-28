@@ -10,11 +10,21 @@
   --border-radius: 16px;
   --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   --font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  --bg-gradient: radial-gradient(circle at 50% -20%, #1a233a, var(--bg-color));
+}
+
+body[data-theme="light"] {
+  --bg-color: #f1f5f9;
+  --panel-bg: rgba(255, 255, 255, 0.8);
+  --panel-border: rgba(0, 0, 0, 0.1);
+  --text-main: #0f172a;
+  --text-muted: #475569;
+  --bg-gradient: radial-gradient(circle at 50% -20%, #e2e8f0, var(--bg-color));
 }
 
 body {
   font-family: var(--font-family);
-  background: radial-gradient(circle at 50% -20%, #1a233a, var(--bg-color));
+  background: var(--bg-gradient);
   color: var(--text-main);
   margin: 0; 
   padding: 20px;
@@ -341,7 +351,6 @@ pre#log, pre.hw-log-pre {
 .topbar h1 {
   font-size: 20px;
   margin: 0 0 4px 0;
-  background: linear-gradient(135deg, #fff, #94a3b8);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: var(--text-main);
+  font-weight: 700;
 }

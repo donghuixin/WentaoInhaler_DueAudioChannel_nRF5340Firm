@@ -105,6 +105,7 @@ let thermalTotalChunks = Math.ceil(THERMAL_NUM_PIXELS / thermalPixelsPerChunk);
 const THERMAL_RAW_TO_C = 1 / 50; // raw int16 / 50 = degrees Celsius
 
 const els = {
+  themeToggleBtn: document.querySelector('#themeToggleBtn'),
   browserState: document.querySelector('#browserState'),
   linkState: document.querySelector('#linkState'),
   deviceName: document.querySelector('#deviceName'),

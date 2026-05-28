@@ -398,30 +398,27 @@ bool BQ25120a::power_connected() {
 }
 
 void BQ25120a::enter_high_impedance() {
-        if (IS_ENABLED(CONFIG_OPENEARABLE_FORCE_RAILS_ALWAYS_ON)) {
-                return;
-        }
-        if (!power_connected()) gpio_pin_set_dt(&cd_pin, 0);
+        // DO NOT pull CD pin low. Pulling it low resets the PMIC to default mode,
+        // which re-enables the TS pin and causes a TS_FAULT (preventing charging)
+        // and drops it from the I2C bus.
+        return;
 }
 
 void BQ25120a::exit_high_impedance() {
-        if (IS_ENABLED(CONFIG_OPENEARABLE_FORCE_RAILS_ALWAYS_ON)) {
-                gpio_pin_set_dt(&cd_pin, 1);
-                last_high_z = micros();
-                return;
-        }
-        if (!power_connected()) {
-                gpio_pin_set_dt(&cd_pin, 1);
-                last_high_z = micros();
-        }
+        gpio_pin_set_dt(&cd_pin, 1);
+        last_high_z = micros();
 }
 
 void BQ25120a::disable_charge() {
-        if (power_connected()) gpio_pin_set_dt(&cd_pin, 1);
+        uint8_t status = read_charging_state();
+        status |= 0x2; // set bit 1 (CE) to 1 to disable charge
+        writeReg(registers::CHARGE_CTRL, &status, sizeof(status));
 }
 
 void BQ25120a::enable_charge() {
-        if (power_connected()) gpio_pin_set_dt(&cd_pin, 0);
+        uint8_t status = read_charging_state();
+        status &= ~0x2; // clear bit 1 (CE) to 0 to enable charge
+        writeReg(registers::CHARGE_CTRL, &status, sizeof(status));
 }
 
 

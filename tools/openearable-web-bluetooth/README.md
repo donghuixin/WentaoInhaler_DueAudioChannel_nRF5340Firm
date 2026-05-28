@@ -45,6 +45,12 @@ The canvas uses AC removal and auto gain. Use the numeric `Peak`, `Mean Abs`, an
 
 The **Thermal IR Camera** panel is at the bottom of the page (scroll down past Services / Log).
 
+Bus mapping used by firmware:
+
+- `IIC0`: P0.24/P0.21 -> Zephyr `&i2c1`
+- `IIC1`: P1.00/P1.15 -> Zephyr `&i2c2` (**MLX90642 on this bus**)
+- `IIC2`: P1.02/P1.03 -> Zephyr `&i2c3`
+
 1. Connect to `OpenEarable-XXXX`.
 2. Select refresh rate (default **4 Hz**).
 3. Click **Start Thermal**.
@@ -66,3 +72,13 @@ temperature_celsius = raw / 50.0
 One frame = 43 chunks (768 pixels). All chunks of a frame share the same timestamp field.
 
 Palette options: Iron (default), Jet, Grayscale. Toggle **Auto Range** or set manual Min/Max °C.
+
+## Hardware Status Panel
+
+After BLE connection, the page auto-reads `HW Status` and shows:
+
+- Bus scan results for `IIC0/IIC1/IIC2` (`ready`, `count`, `found` addresses)
+- Key device probe state (`ok`) and resolved bus names
+- Derived high-level flags (`thermal_ir`, `imu`, `fuel_gauge`, etc.)
+
+If thermal is missing, first verify `mlx90642_thermal` appears on `IIC1` with `0x66`.

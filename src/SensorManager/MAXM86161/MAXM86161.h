@@ -93,7 +93,7 @@ class MAXM86161 {
     int set_watermark(int level);
 
 private:
-    TWIM * _i2c = &I2C2;
+    TWIM * _i2c = &IIC1;
 
     uint8_t _addr = DT_REG_ADDR(DT_NODELABEL(maxm86161));
 

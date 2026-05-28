@@ -5,7 +5,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(bq25120a, LOG_LEVEL_DBG);
 
-BQ25120a battery_controller(&I2C1);
+BQ25120a battery_controller(&IIC0);
 
 BQ25120a::BQ25120a(TWIM * i2c) : _i2c(i2c) { //, load_switch(LoadSwitch(GPIO_DT_SPEC_GET(DT_NODELABEL(bq25120a), lsctrl_gpios))) {
 
@@ -34,7 +34,7 @@ int BQ25120a::begin() {
 
         ret = gpio_pin_configure_dt(&cd_pin, GPIO_OUTPUT_INACTIVE);
 	if (ret != 0) {
-                LOG_ERR("Failed to set GPOUT as input.\n");
+                LOG_ERR("Failed to set CD as output inactive.\n");
                 return ret;
         }
 
@@ -146,6 +146,8 @@ void BQ25120a::setup(const battery_settings &_battery_settings) {
         write_charging_control(_battery_settings.i_charge);
         write_termination_control(_battery_settings.i_term);
         write_LDO_voltage_control(3.3);
+        write_LS_control(true);
+        LOG_INF("BQ25120A: LDO set to 3.3V and enabled (EN_LS=1)");
         write_uvlo_ilim(params);
 
         enter_high_impedance();
@@ -155,6 +157,12 @@ uint8_t BQ25120a::read_charging_state() {
         uint8_t status = 0;
         bool ret = readReg(registers::CTRL, (uint8_t *) &status, sizeof(status));
 
+        return status;
+}
+
+uint8_t BQ25120a::read_charge_ctrl_raw() {
+        uint8_t status = 0;
+        (void)readReg(registers::CHARGE_CTRL, (uint8_t *)&status, sizeof(status));
         return status;
 }
 
@@ -241,12 +249,11 @@ uint8_t BQ25120a::write_LDO_voltage_control(float volt) {
 
         volt = CLAMP(volt, 0.8f, 3.3f);
 
-        readReg(registers::LS_LDO_CTRL, &status, sizeof(status));
-
-        //status |= (((uint16_t)((volt - 0.8) * 10)) & 0x1F) << 2;
-        status &= 1 << 7;
+        /* Always force EN_LS_LDO=1 together with the voltage code. Some OPNs
+         * ignore code-bit writes when EN=0 (POR LSCTRL=0x7C on this board).
+         */
+        status = (1U << 7);
         status |= ((uint8_t)((volt - 0.8f) * 10 + EPS)) << 2;
-        //status |= 1 << 7;
 
         writeReg(registers::LS_LDO_CTRL, &status, sizeof(status));
 
@@ -260,6 +267,12 @@ float BQ25120a::read_ldo_voltage() {
         float voltage = 0.8f + ((status >> 2 & 0x1F)) * 0.1f;
 
         return voltage;
+}
+
+uint8_t BQ25120a::read_ls_ldo_ctrl_raw() {
+        uint8_t status = 0;
+        (void)readReg(registers::LS_LDO_CTRL, (uint8_t *)&status, sizeof(status));
+        return status;
 }
 
 float BQ25120a::read_battery_voltage_control() {
@@ -385,10 +398,18 @@ bool BQ25120a::power_connected() {
 }
 
 void BQ25120a::enter_high_impedance() {
+        if (IS_ENABLED(CONFIG_OPENEARABLE_FORCE_RAILS_ALWAYS_ON)) {
+                return;
+        }
         if (!power_connected()) gpio_pin_set_dt(&cd_pin, 0);
 }
 
 void BQ25120a::exit_high_impedance() {
+        if (IS_ENABLED(CONFIG_OPENEARABLE_FORCE_RAILS_ALWAYS_ON)) {
+                gpio_pin_set_dt(&cd_pin, 1);
+                last_high_z = micros();
+                return;
+        }
         if (!power_connected()) {
                 gpio_pin_set_dt(&cd_pin, 1);
                 last_high_z = micros();

@@ -93,7 +93,12 @@
 	 clock-source = "ACLK";
  };
  
- &i2c1 {
+/* Physical bus mapping used in this project:
+ * IIC0 = SCL P0.24 / SDA P0.21 -> Zephyr &i2c1
+ * IIC1 = SCL P1.00 / SDA P1.15 -> Zephyr &i2c2
+ * IIC2 = SCL P1.02 / SDA P1.03 -> Zephyr &i2c3
+ */
+&i2c1 {
 	 compatible = "nordic,nrf-twim";
 	 status = "okay";
 	 pinctrl-0 = <&i2c1_default>;
@@ -121,6 +126,7 @@
 			enable-gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
 			power-delay-us = <600>; // 250us per datasheet
 			status = "okay";
+			default-on;
         };
 	 };
 
@@ -136,14 +142,6 @@
 		 enable-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
 	 };
 
-	 /* MLX90642 32x24 thermal IR array (driven by src/SensorManager/MLX90642).
-	  * The third-party Arduino library defines `MLX90642_ADDR 0x66`, which
-	  * is the 8-bit form. In Zephyr we use the 7-bit form (0x66 >> 1 = 0x33).
-	  */
-	 mlx90642: mlx90642@33 {
-		 compatible = "i2c-device";
-		 reg = <0x33>;
-	 };
  };
  
  &i2c2 {
@@ -165,6 +163,14 @@
         compatible = "i2c-device";
         reg = <0x3A>;
     };
+
+	/* MLX90642 32x24 thermal IR array (driven by src/SensorManager/MLX90642).
+	 * IR camera is wired on project IIC1 (P1.00/P1.15), i.e. Zephyr &i2c2.
+	 */
+	mlx90642: mlx90642@66 {
+		compatible = "i2c-device";
+		reg = <0x66>;
+	};
  };
  
  &i2c3 {

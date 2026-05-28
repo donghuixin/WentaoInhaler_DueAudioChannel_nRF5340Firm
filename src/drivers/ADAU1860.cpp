@@ -12,7 +12,11 @@ LOG_MODULE_REGISTER(ADAU1860, 3);
 #include "Lark-eq.c"
 #include "Lark-fdsp.c"
 
-ADAU1860 dac(&I2C2);
+/* ADAU1860 physical I2C bus is project IIC1 (Zephyr &i2c2, P1.00/P1.15).
+ * Do NOT change to IIC0: dac.begin() will NACK and ERR_CHK will trap the
+ * boot sequence before bt_mgmt_adv_start() runs, killing BLE advertising.
+ */
+ADAU1860 dac(&IIC1);
 
 static struct k_work_delayable ascr_lock_work;
 

@@ -162,7 +162,7 @@ class MLX90632 {
     float gatherSensorTemp(status &returnError);
 
     //Variables
-    TWIM *_i2c = &I2C3; //The generic connection to user's chosen I2C hardware
+    TWIM *_i2c = &IIC1; // OpenEarable mapping: MLX90632 is on IIC1 (Zephyr &i2c2)
     uint8_t _deviceAddress = DT_REG_ADDR(DT_NODELABEL(mlx90632)); //Keeps track of I2C address. setI2CAddress changes this. Either 0x3A or 0x3B (default)
 
 };

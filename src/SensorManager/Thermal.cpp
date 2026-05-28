@@ -39,16 +39,23 @@ const SampleRateSetting<4> Thermal::sample_rates = {
 bool Thermal::init(struct k_msgq *queue)
 {
 	if (!_active) {
-		/* Bring up both rails: I2C1 pull-ups live on 1.8V while the
-		 * MLX90642 itself requires 3-3.6V (typ 3.3V).
+		/* Bring up both rails: IIC pull-ups live on 1.8V while the
+		 * MLX90642 itself requires 3-3.6V (typ 3.3V, datasheet section 2.2).
+		 * The 3V3 rail is driven by the BQ25120A LDO/LS chain
+		 * (see Battery/BQ25120a setup). The PM runtime callbacks only
+		 * wait the load-switch t_on (~300-600us); the MLX90642 POR /
+		 * EEPROM-bootstrap is handled inside `MLX90642::begin()`.
 		 */
-		pm_device_runtime_get(ls_1_8);
-		pm_device_runtime_get(ls_3_3);
+		int r1 = pm_device_runtime_get(ls_1_8);
+		int r2 = pm_device_runtime_get(ls_3_3);
+		LOG_INF("Thermal rails: ls_1_8 get=%d, ls_3_3 get=%d", r1, r2);
 		_active = true;
 	}
 
 	if (!cam.begin()) {
-		LOG_WRN("MLX90642 thermal camera not detected, check I2C1 wiring");
+		LOG_ERR("MLX90642 not detected on IIC1 (i2c2, SCL=P1.00, SDA=P1.15). "
+			"Re-check: (1) 3.3V on pin2, (2) GND on pin3, (3) SDA/SCL not "
+			"swapped, (4) 4.7k pull-ups to 1V8 present, (5) DTS reg=0x66.");
 		pm_device_runtime_put(ls_1_8);
 		pm_device_runtime_put(ls_3_3);
 		_active = false;

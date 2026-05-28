@@ -8,7 +8,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(bq27220, LOG_LEVEL_DBG);
 
-BQ27220 fuel_gauge(&I2C1);
+BQ27220 fuel_gauge(&IIC0);
 
 BQ27220::BQ27220(TWIM * i2c) : _i2c(i2c) {
         

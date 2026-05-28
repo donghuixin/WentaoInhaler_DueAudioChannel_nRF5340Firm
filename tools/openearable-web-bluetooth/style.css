@@ -184,6 +184,7 @@ h2 {
 }
 
 .device-panel,
+.hw-status-panel,
 .controls-panel,
 .audio-panel,
 .services-panel,
@@ -193,6 +194,10 @@ h2 {
 
 .services-panel {
   grid-column: span 1;
+}
+
+.hw-status-panel {
+  grid-column: span 2;
 }
 
 .audio-panel {
@@ -220,6 +225,77 @@ h2 {
 
 .facts div:last-child {
   border-bottom: 0;
+}
+
+.hw-status-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 16px 0;
+}
+
+.hw-table-wrap {
+  padding: 8px 16px 12px;
+}
+
+.hw-table-wrap h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.hw-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.hw-table th,
+.hw-table td {
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+
+.hw-table th {
+  background: var(--panel-soft);
+  text-align: left;
+}
+
+.hw-log-pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow: auto;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.hw-badge {
+  display: inline-block;
+  min-width: 40px;
+  text-align: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.hw-badge.ok {
+  color: var(--ok);
+  background: #eef8f4;
+  border: 1px solid rgba(20, 122, 99, 0.3);
+}
+
+.hw-badge.bad {
+  color: var(--danger);
+  background: #fff0f0;
+  border: 1px solid rgba(161, 61, 61, 0.3);
 }
 
 dt {
@@ -436,6 +512,7 @@ input {
   }
 
   .services-panel,
+  .hw-status-panel,
   .audio-panel,
   .adv-panel {
     grid-column: span 2;
@@ -467,6 +544,7 @@ input {
   }
 
   .services-panel,
+  .hw-status-panel,
   .audio-panel,
   .adv-panel {
     grid-column: span 1;

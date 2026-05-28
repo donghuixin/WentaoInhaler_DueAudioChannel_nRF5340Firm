@@ -1,4 +1,4 @@
-﻿# OpenEarable 48 kHz PCM16 + Thermal IR Development Branch
+# OpenEarable 48 kHz PCM16 + Thermal IR Development Branch
 
 This branch is a working OpenEarable firmware and Web Bluetooth setup for the current hardware bring-up. It is not the upstream OpenEarable 2 README. The focus of this branch is:
 
@@ -6,7 +6,7 @@ This branch is a working OpenEarable firmware and Web Bluetooth setup for the cu
 - 48 kHz PCM16 audio preview from the ADAU1860/I2S path
 - Web Bluetooth connection from Chrome/Edge on Windows
 - IMU streaming with the BMI270-compatible board wiring used in this project
-- MLX90642 32×24 thermal IR camera streaming over BLE (I2C1)
+- MLX90642 32x24 thermal IR camera streaming over BLE (IIC1: P1.00/P1.15)
 - keeping the 48 kHz build usable while avoiding the previous 96 kHz experiment path
 
 ## Current Branch
@@ -35,7 +35,7 @@ Recent branch contents include:
 - `CONFIG_OPENEARABLE_WEB_BLE_LEGACY_ADV=y` so Windows/Chrome Web Bluetooth can discover the device.
 - BMI270 deferred initialization so the IMU is initialized after the sensor rail is powered.
 - `Audio Waveform Service` for PCM16 waveform preview over BLE GATT.
-- MLX90642 driver on I2C1 with chunked BLE thermal frame transport (`ID_THERMAL = 8`).
+- MLX90642 driver on IIC1 with chunked BLE thermal frame transport (`ID_THERMAL = 8`).
 - Web UI under `tools/openearable-web-bluetooth/` for IMU, audio waveform, and thermal IR heatmap testing.
 
 ## Required Toolchain
@@ -217,16 +217,48 @@ For 400 Hz to 2 kHz tones, start with `10 ms mid`. For 100 Hz to 300 Hz tones, u
 The thermal path is:
 
 ```text
-MLX90642 (32×24, 768 pixels) -> I2C1 (TWIM) -> Thermal sensor wrapper -> BLE Sensor Service -> Web UI heatmap
+MLX90642 (32x24, 768 pixels) -> IIC1 (TWIM alias) -> Thermal sensor wrapper -> BLE Sensor Service -> Web UI heatmap
 ```
 
-Hardware notes:
+IIC bus mapping in this project (strict pin definition):
 
-- Sensor is on **I2C1** (`&i2c1` in the board DTS).
-- Default DTS 7-bit address is `0x33` (Arduino library `MLX90642_ADDR 0x66` is the 8-bit form).
-- If your module uses a different address, change `mlx90642@33` `reg` in `openearable_v2_nrf5340_cpuapp_common.dts`.
+- `IIC0`: SCL `P0.24`, SDA `P0.21` -> Zephyr `&i2c1`
+- `IIC1`: SCL `P1.00`, SDA `P1.15` -> Zephyr `&i2c2`
+- `IIC2`: SCL `P1.02`, SDA `P1.03` -> Zephyr `&i2c3`
+
+Device assignment:
+
+- `IIC0`: `bq27220` (0x55), `bq25120a` (0x6A), `bmi270` (0x68), `adau1860` (0x64)
+- `IIC1`: `mlx90642` (0x66), `maxm86161` (0x62), `mlx90632` (0x3A)
+- `IIC2`: reserved/other bring-up devices
+
+Thermal hardware notes:
+
+- Sensor is on **IIC1** (Zephyr `&i2c2`) in `openearable_v2_nrf5340_cpuapp_common.dts`.
+- DTS 7-bit address is `0x66`.
+- Do not use `0x33` unless your module is really strapped to that address.
 - `Thermal::init()` enables both `ls_1_8` and `ls_3_3` (MLX90642 needs 3.0–3.6 V).
 - Allow up to ~3 minutes after power-on for thermal stabilization before expecting full accuracy.
+
+**CRITICAL 1.8V I2C REQUIREMENTS (nRF5340 Compatibility):**
+1. **EEPROM 0x11FC (Analog Config)**: The nRF5340 GPIOs run at 1.8V. The MLX90642 factory default for I2C VIH is VDD-referenced (0.7 × 3.3V = 2.31V), which causes the sensor to NACK 1.8V signals.
+   - You MUST use a 3.3V I2C master (e.g., an Arduino) to set **bit 2 of EEPROM 0x11FC to 1** before connecting it to the nRF5340.
+   - This changes the MLX90642 I2C threshold to 1.8V-reference mode (VIH ≈ 1.26V), allowing the nRF5340 to communicate successfully.
+2. **Boot-Up Sequence**: The MLX90642 requires a minimum of **600ms POR (Power-On Reset) delay** after `ls_3_3` (3.3V power rail) is enabled before it will ACK any I2C commands. The driver implements this wait.
+
+Why thermal search could fail before this change:
+
+- **1.8V I2C Voltage Mismatch**: As mentioned above, missing the 0x11FC EEPROM configuration caused a silent NACK because the 1.8V logic level couldn't trigger the sensor's 3.3V-referenced threshold.
+- Bus mismatch: board wiring used `IIC1(P1.00/P1.15)` while previous DTS/driver path still pointed to a different bus.
+- Address mismatch: mixed use of `0x33` and `0x66` caused probe to miss the device on some builds.
+- Power domain timing: if `ls_1_8`/`ls_3_3` is not up before probe, I2C scan reports `NACK`.
+
+Current fix status in this branch:
+
+- `mlx90642` DTS node moved to Zephyr `&i2c2` (project `IIC1`).
+- MLX90642 driver now selects TWIM bus from DTS parent at compile time (no hard-coded bus).
+- MLX90642 driver now reads and verifies `0x11FC` during boot and warns if the 1.8V threshold bit is missing.
+- HW status JSON now reports buses as `IIC0/IIC1/IIC2` with matching probe targets.
 
 Driver layout (ported from the third-party Arduino MLX90642 v1.0.3 library):
 
@@ -275,7 +307,7 @@ Alternatively, use the generic **Sensor Stream** controls: select `Thermal IR`, 
 - The 96 kHz experiment branch did not solve low-frequency display quality; this branch stays on 48 kHz and improves the preview windowing instead.
 - True raw long-window audio capture should use SD card, USB, RTT, or a dedicated streaming protocol instead of this BLE preview characteristic.
 - Thermal IR at 8 Hz sends ~344 BLE packets/s (43 chunks × 8 frames); use 4 Hz for a safer margin on congested links.
-- The existing `MLX90632` skin-temperature sensor on I2C2 (`ID_OPTTEMP`) is unchanged; thermal IR is a separate sensor (`ID_THERMAL`).
+- The existing `MLX90632` skin-temperature sensor on IIC1 / Zephyr `&i2c2` (`ID_OPTTEMP`) is unchanged; thermal IR is a separate sensor (`ID_THERMAL`).
 
 ## Useful Files
 

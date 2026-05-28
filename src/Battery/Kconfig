@@ -98,4 +98,25 @@ config OPENEARABLE_I2C3_SCAN_TEST
 	  the 1.8 V load switch on and scans the I2C3 sensor bus at several bus
 	  speeds, logging ACK addresses and register 0 values over RTT.
 
+config OPENEARABLE_FORCE_RAILS_ALWAYS_ON
+	bool "Force PMIC/load-switch rails always on (diagnostic)"
+	default n
+	help
+	  Diagnostic option for unstable battery bring-up. Keeps BQ25120A out of
+	  high-impedance path and keeps ls_1_8 / ls_3_3 runtime references active,
+	  so 1.8V and 3.3V rails stay on. This increases power draw and should not
+	  be used for production battery life tests.
+
+config BQ25120A_VBUS_RAIL_LOCKOUT
+	bool "Force 3V3 / 1V8 rails OFF whenever USB / VIN is connected"
+	default n
+	help
+	  Safety lockout for boards where USB VBUS can leak 5 V onto the 3V3 net
+	  through a damaged TVS, shorted cap, or PMIC path FET. When enabled, the
+	  firmware drives both load-switch enable GPIOs low while the BQ25120A PG
+	  pin reports VIN good. This keeps MLX90642 (3.6 V max) and other
+	  sensitive peripherals safe while the hardware is being repaired.
+	  Disable only after confirming with a meter that USB no longer pushes
+	  > 3.3 V onto the 3V3 rail.
+
 endmenu

@@ -24,6 +24,7 @@ const UUIDS = {
   identifier: '45622511-6468-465a-b141-0b9b0f96b468',
   generation: '45622512-6468-465a-b141-0b9b0f96b468',
   firmware: '45622513-6468-465a-b141-0b9b0f96b468',
+  hardwareStatus: '45622514-6468-465a-b141-0b9b0f96b468',
   smpDfuService: '8d53dc1d-1db7-4cd3-868b-8a527460aa84'
 };
 
@@ -58,6 +59,7 @@ const KNOWN_CHARS = new Map([
   [UUIDS.identifier, 'Identifier'],
   [UUIDS.generation, 'Generation'],
   [UUIDS.firmware, 'Firmware'],
+  [UUIDS.hardwareStatus, 'Hardware Status'],
   [UUIDS.buttonState, 'Button State'],
   [UUIDS.audioMode, 'Audio Mode'],
   [UUIDS.micSelect, 'Mic Select'],
@@ -183,7 +185,15 @@ const els = {
   thermalMax: document.querySelector('#thermalMax'),
   thermalAvg: document.querySelector('#thermalAvg'),
   thermalDropped: document.querySelector('#thermalDropped'),
-  thermalLastTime: document.querySelector('#thermalLastTime')
+  thermalLastTime: document.querySelector('#thermalLastTime'),
+  readHwStatusBtn: document.querySelector('#readHwStatusBtn'),
+  hwStatusTime: document.querySelector('#hwStatusTime'),
+  hwStatusSummary: document.querySelector('#hwStatusSummary'),
+  hwStatusTableBody: document.querySelector('#hwStatusTableBody'),
+  i2cBusTableBody: document.querySelector('#i2cBusTableBody'),
+  hwBootLog: document.querySelector('#hwBootLog'),
+  hwRecentLog: document.querySelector('#hwRecentLog'),
+  hwLogDropped: document.querySelector('#hwLogDropped')
 };
 
 let device = null;
@@ -324,6 +334,168 @@ function resetFacts() {
   }
 }
 
+function resetHardwareStatusUi(message = '尚未读取') {
+  if (els.hwStatusTime) {
+    els.hwStatusTime.textContent = '-';
+  }
+  if (els.hwStatusSummary) {
+    els.hwStatusSummary.textContent = message;
+  }
+  if (els.hwStatusTableBody) {
+    els.hwStatusTableBody.innerHTML = '<tr><td colspan="5" class="fine">无数据</td></tr>';
+  }
+  if (els.i2cBusTableBody) {
+    els.i2cBusTableBody.innerHTML = '<tr><td colspan="4" class="fine">无数据</td></tr>';
+  }
+  if (els.hwBootLog) {
+    els.hwBootLog.textContent = '无数据';
+  }
+  if (els.hwRecentLog) {
+    els.hwRecentLog.textContent = '无数据';
+  }
+  if (els.hwLogDropped) {
+    els.hwLogDropped.textContent = 'dropped: boot=0, recent=0';
+  }
+}
+
+function formatBootLogEntries(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return '无数据';
+  }
+  return entries
+    .map((entry) => {
+      const tms = Number.isFinite(entry?.t) ? entry.t : 0;
+      const secs = (tms / 1000).toFixed(3).padStart(8, ' ');
+      const msg = typeof entry?.m === 'string' ? entry.m : '';
+      return `[${secs}s] ${msg}`;
+    })
+    .join('\n');
+}
+
+function boolBadge(ok) {
+  if (ok) return '<span class="hw-badge ok">OK</span>';
+  return '<span class="hw-badge bad">FAIL</span>';
+}
+
+function renderHardwareStatus(status) {
+  if (!status || typeof status !== 'object') {
+    resetHardwareStatusUi('状态格式错误');
+    return;
+  }
+
+  const i2cItems = Array.isArray(status.i2c) ? status.i2c : [];
+  const devices = Array.isArray(status.devices) ? status.devices : [];
+  const derived = status.derived && typeof status.derived === 'object' ? status.derived : {};
+
+  const okCount = devices.filter((d) => d && d.ok === 1).length;
+  const totalCount = devices.length;
+  if (els.hwStatusSummary) {
+    els.hwStatusSummary.textContent = `设备通信 ${okCount}/${totalCount} 正常`;
+  }
+  if (els.hwStatusTime) {
+    els.hwStatusTime.textContent = new Date().toLocaleTimeString();
+  }
+
+  if (els.i2cBusTableBody) {
+    els.i2cBusTableBody.innerHTML = '';
+    for (const bus of i2cItems) {
+      const tr = document.createElement('tr');
+      const foundList = Array.isArray(bus.found) ? bus.found.join(', ') : '-';
+      tr.innerHTML = `
+        <td>${bus.bus ?? '-'}</td>
+        <td>${boolBadge((bus.ready ?? 0) === 1)}</td>
+        <td>${bus.count ?? 0}</td>
+        <td><code>${foundList || '-'}</code></td>
+      `;
+      els.i2cBusTableBody.appendChild(tr);
+    }
+    if (i2cItems.length === 0) {
+      els.i2cBusTableBody.innerHTML = '<tr><td colspan="4" class="fine">无总线数据</td></tr>';
+    }
+  }
+
+  if (els.hwStatusTableBody) {
+    els.hwStatusTableBody.innerHTML = '';
+    for (const dev of devices) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${dev.name ?? '-'}</td>
+        <td>${dev.bus ?? '-'}</td>
+        <td><code>${dev.addr ?? '-'}</code></td>
+        <td>${boolBadge((dev.ok ?? 0) === 1)}</td>
+        <td class="fine">通信探测</td>
+      `;
+      els.hwStatusTableBody.appendChild(tr);
+    }
+
+    const derivedRows = [
+      ['imu', 'IMU状态'],
+      ['microphone_inner', '麦克风内侧'],
+      ['microphone_outer', '麦克风外侧'],
+      ['thermal_ir', '红外传感器'],
+      ['fuel_gauge', '电量计'],
+      ['ppg', 'PPG'],
+      ['opt_temp', '光学温度']
+    ];
+    for (const [key, name] of derivedRows) {
+      if (Object.prototype.hasOwnProperty.call(derived, key)) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${name}</td>
+          <td>-</td>
+          <td>-</td>
+          <td>${boolBadge(Number(derived[key]) === 1)}</td>
+          <td class="fine">派生状态</td>
+        `;
+        els.hwStatusTableBody.appendChild(tr);
+      }
+    }
+
+    if (devices.length === 0 && Object.keys(derived).length === 0) {
+      els.hwStatusTableBody.innerHTML = '<tr><td colspan="5" class="fine">无设备数据</td></tr>';
+    }
+  }
+
+  const diag = status.diag && typeof status.diag === 'object' ? status.diag : null;
+  if (els.hwBootLog) {
+    els.hwBootLog.textContent = diag ? formatBootLogEntries(diag.boot) : '无数据';
+  }
+  if (els.hwRecentLog) {
+    els.hwRecentLog.textContent = diag ? formatBootLogEntries(diag.recent) : '无数据';
+  }
+  if (els.hwLogDropped) {
+    const db = diag && Number.isFinite(diag.dropped_boot) ? diag.dropped_boot : 0;
+    const dr = diag && Number.isFinite(diag.dropped_recent) ? diag.dropped_recent : 0;
+    els.hwLogDropped.textContent = `dropped: boot=${db}, recent=${dr}`;
+  }
+}
+
+async function readHardwareStatus() {
+  if (!server) {
+    resetHardwareStatusUi('未连接');
+    return null;
+  }
+
+  try {
+    const service = await server.getPrimaryService(UUIDS.deviceInfoService);
+    const characteristic = await service.getCharacteristic(UUIDS.hardwareStatus);
+    const value = await characteristic.readValue();
+    const text = bytesToText(value);
+    if (!text) {
+      resetHardwareStatusUi('状态为空');
+      return null;
+    }
+
+    const status = JSON.parse(text);
+    renderHardwareStatus(status);
+    return status;
+  } catch (error) {
+    resetHardwareStatusUi('读取失败');
+    log(`硬件状态读取失败: ${error.message}`);
+    return null;
+  }
+}
+
 function setConnectedUi(isConnected) {
   els.disconnectBtn.disabled = !isConnected;
   els.readBatteryBtn.disabled = !isConnected;
@@ -341,6 +513,9 @@ function setConnectedUi(isConnected) {
   }
   if (els.stopThermalBtn) {
     els.stopThermalBtn.disabled = !isConnected || !sensorConfigChar;
+  }
+  if (els.readHwStatusBtn) {
+    els.readHwStatusBtn.disabled = !isConnected;
   }
   els.gattState.textContent = isConnected ? 'GATT connected' : 'GATT disconnected';
 }
@@ -369,6 +544,7 @@ function resetConnectionState() {
   els.factId.textContent = '-';
   els.serviceCount.textContent = '0 found';
   els.servicesList.innerHTML = '';
+  resetHardwareStatusUi('尚未读取');
   setConnectedUi(false);
 }
 
@@ -635,6 +811,7 @@ async function readDeviceSummary() {
     const channel = value.getUint8(0);
     setFact('factAudioChannel', channel === 0 ? 'Left (0)' : channel === 1 ? 'Right (1)' : String(channel));
   });
+  await readHardwareStatus();
   setConnectedUi(true);
 }
 
@@ -1729,10 +1906,16 @@ if (els.thermalPalette) {
     if (thermalFramesRendered > 0) renderThermalFrame();
   });
 }
+if (els.readHwStatusBtn) {
+  els.readHwStatusBtn.addEventListener('click', () => {
+    readHardwareStatus().catch((error) => log(`硬件状态刷新失败: ${error.message}`));
+  });
+}
 
 resetFacts();
 resetAudioWaveformValues();
 resetThermalValues();
+resetHardwareStatusUi('尚未读取');
 setConnectedUi(false);
 checkSupport();
 window.addEventListener('resize', () => drawAudioWaveform(lastAudioSamples, {

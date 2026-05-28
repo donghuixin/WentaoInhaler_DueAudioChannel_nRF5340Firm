@@ -10,10 +10,13 @@
 
 #include "MLX90642.h"
 
+#include <zephyr/devicetree.h>
+#include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
 
+#include <errno.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(MLX90642, 3);
@@ -26,10 +29,21 @@ LOG_MODULE_REGISTER(MLX90642, 3);
 #error "DTS node `mlx90642` is missing. Add it to the OpenEarable v2 board overlay."
 #endif
 
-/* I2C bus that hosts the MLX90642. Hard-wired to I2C1 because that is what the
- * OpenEarable v2 board uses (see DTS overlay).
+/* Pick TWIM bus from the DTS parent of `mlx90642` so wiring changes only need
+ * DTS updates and cannot silently drift from driver configuration.
  */
+#if DT_SAME_NODE(DT_BUS(MLX90642_NODE), DT_NODELABEL(i2c1))
 #define MLX90642_I2C_BUS I2C1
+#define MLX90642_I2C_NAME "IIC0(&i2c1)"
+#elif DT_SAME_NODE(DT_BUS(MLX90642_NODE), DT_NODELABEL(i2c2))
+#define MLX90642_I2C_BUS I2C2
+#define MLX90642_I2C_NAME "IIC1(&i2c2)"
+#elif DT_SAME_NODE(DT_BUS(MLX90642_NODE), DT_NODELABEL(i2c3))
+#define MLX90642_I2C_BUS I2C3
+#define MLX90642_I2C_NAME "IIC2(&i2c3)"
+#else
+#error "mlx90642 must be placed on &i2c1, &i2c2, or &i2c3"
+#endif
 
 /* Maximum number of bytes per Zephyr I2C transaction. Keeps the block-read
  * comfortably under `zephyr,concat-buf-size`/`zephyr,flash-buf-max-size`
@@ -37,10 +51,28 @@ LOG_MODULE_REGISTER(MLX90642, 3);
  */
 #define MLX90642_RANGE_CHUNK_BYTES 256U
 
+/* Lightweight zero-length write to check if a 7-bit address ACKs.
+ * Used to distinguish "device not on bus" from "EEPROM still busy" so the
+ * log message tells the operator which way to debug (wiring vs timing).
+ */
+int MLX90642::probeAck(uint8_t addr)
+{
+	if (_i2c == nullptr) {
+		return -ENODEV;
+	}
+	uint8_t dummy = 0;
+	_i2c->aquire();
+	int ret = i2c_write(_i2c->master, &dummy, 0, addr);
+	_i2c->release();
+	return ret;
+}
+
 bool MLX90642::begin()
 {
 	status err = SENSOR_SUCCESS;
 	uint8_t addr = (uint8_t)DT_REG_ADDR(MLX90642_NODE);
+	LOG_INF("MLX90642 DTS bus=%s addr=0x%02X (datasheet default 0x66, fallback 0x33)",
+		MLX90642_I2C_NAME, addr);
 	return begin(addr, MLX90642_I2C_BUS, err);
 }
 
@@ -52,25 +84,133 @@ bool MLX90642::begin(uint8_t deviceAddress, TWIM &i2c, status &returnError)
 	_last_progress = 0xFFFF;
 
 	_i2c->begin();
+	if (!device_is_ready(_i2c->master)) {
+		LOG_ERR("MLX90642 I2C controller %s is NOT ready - check DTS / pinctrl",
+			MLX90642_I2C_NAME);
+		returnError = SENSOR_I2C_ERROR;
+		return false;
+	}
 
-	/* Probe: a healthy device will return a plausible Ta reading.
-	 * The probe register is a status word, so reading it should always
-	 * succeed once the bus + 1V8 supply are up.
+	/* Datasheet 3.2.2: first valid data after POR needs at most
+	 * 10ms (init) + 70ms (max) + RT (up to 500ms @ 2Hz). The supply
+	 * itself may have been off until ls_3_3 was switched on a moment
+	 * ago, so we wait long enough for the EEPROM->RAM copy to settle
+	 * before bothering the device with the first command.
+	 */
+	LOG_INF("MLX90642 waiting %u ms for POR / EEPROM bootstrap...",
+		MLX90642_POR_DELAY_MS);
+	k_msleep(MLX90642_POR_DELAY_MS);
+
+	/* Step 1: simple I2C ACK probe at the configured address. This isolates
+	 * a wiring/power problem from a register-read failure.
+	 */
+	int ack = -EIO;
+	for (uint32_t i = 0; i < MLX90642_PROBE_RETRIES; i++) {
+		ack = probeAck(_deviceAddress);
+		if (ack == 0) {
+			break;
+		}
+		LOG_WRN("MLX90642 NACK on 0x%02X (try %u/%u, errno=%d)",
+			_deviceAddress, (unsigned int)(i + 1U),
+			(unsigned int)MLX90642_PROBE_RETRIES, ack);
+		k_msleep(MLX90642_PROBE_RETRY_MS);
+	}
+
+	if (ack != 0) {
+		/* Per datasheet NOTE 1 (table 5 / section 3.1.5.4): if the
+		 * EEPROM slave-address byte is 0x00 the device responds on
+		 * 0x33 instead. Try it once before giving up so the operator
+		 * doesn't have to guess.
+		 */
+		int ack_fb = probeAck(MLX90642_FALLBACK_ADDR);
+		if (ack_fb == 0) {
+			LOG_WRN("MLX90642 not at 0x%02X but ACKs on fallback 0x%02X "
+				"(EEPROM SA byte == 0x00). Switching driver to 0x%02X.",
+				_deviceAddress, MLX90642_FALLBACK_ADDR,
+				MLX90642_FALLBACK_ADDR);
+			_deviceAddress = MLX90642_FALLBACK_ADDR;
+		} else {
+			LOG_ERR("MLX90642 no ACK on 0x%02X or 0x%02X (errno=%d/%d). "
+				"Check IIC1 wiring (SCL=P1.00, SDA=P1.15), pull-ups, "
+				"VDD=3.0..3.6V on pin2, and that ls_3_3 is enabled.",
+				_deviceAddress, MLX90642_FALLBACK_ADDR, ack, ack_fb);
+			returnError = SENSOR_ID_ERROR;
+			return false;
+		}
+	}
+
+	/* Step 2: read the Progress bar with retries. 0x3C10 is a small RAM
+	 * field that should never read back 0xFFFF; if it does, we either
+	 * have noise or the EEPROM->RAM copy isn't done yet.
 	 */
 	uint16_t probe = 0;
-	status ret = readAddr_unsigned(MLX90642_PROGRESS_ADDR, probe);
+	status ret = SENSOR_I2C_ERROR;
+	for (uint32_t i = 0; i < MLX90642_PROBE_RETRIES; i++) {
+		ret = readAddr_unsigned(MLX90642_PROGRESS_ADDR, probe);
+		if (ret == SENSOR_SUCCESS && probe != 0xFFFF) {
+			break;
+		}
+		LOG_WRN("MLX90642 progress read try %u/%u: ret=%d raw=0x%04X",
+			(unsigned int)(i + 1U),
+			(unsigned int)MLX90642_PROBE_RETRIES, (int)ret, probe);
+		k_msleep(MLX90642_PROBE_RETRY_MS);
+	}
+
 	if (ret != SENSOR_SUCCESS || probe == 0xFFFF) {
-		LOG_WRN("MLX90642 probe failed at 0x%02X (ret=%d, raw=0x%04X)",
+		LOG_ERR("MLX90642 ACKs on 0x%02X but progress read keeps failing "
+			"(ret=%d, raw=0x%04X). Possible causes: long wires/noise, "
+			"missing/weak pull-ups, FM+ disabled in EEPROM, or a real "
+			"defective device.",
 			_deviceAddress, (int)ret, probe);
 		returnError = SENSOR_ID_ERROR;
 		return false;
 	}
 
+	/* Step 3: read FW version + part of device ID for traceability. */
+	uint16_t fw_lo = 0, fw_hi = 0;
+	uint16_t id0 = 0, id1 = 0;
+	uint16_t sa_eep = 0;
+	(void)readAddr_unsigned(MLX90642_FW_VERSION_LO, fw_lo);
+	(void)readAddr_unsigned(MLX90642_FW_VERSION_HI, fw_hi);
+	(void)readAddr_unsigned(MLX90642_DEVICE_ID_0, id0);
+	(void)readAddr_unsigned(MLX90642_DEVICE_ID_1, id1);
+	(void)readAddr_unsigned(MLX90642_SA_ADDR, sa_eep);
+
+	/* Step 3.5: verify 0x11FC analog config — critical for 1.8V I2C.
+	 *
+	 * The nRF5340 GPIO/TWIM runs at 1.8V. If bit 2 of 0x11FC is NOT set
+	 * the MLX90642 uses VDD-referenced thresholds: VIH = 0.7 × 3.3V =
+	 * 2.31V, which 1.8V cannot reach → the sensor will NACK all traffic.
+	 *
+	 * If we can read this register, it means the sensor was already
+	 * configured for 1.8V mode (otherwise we would have failed at the
+	 * ACK probe above). Log the value for diagnostics anyway.
+	 */
+	uint16_t analog_cfg = 0;
+	if (readAddr_unsigned(MLX90642_ANALOG_CONFIG_ADDR, analog_cfg) == SENSOR_SUCCESS) {
+		LOG_INF("MLX90642 EEPROM 0x11FC = 0x%04X (bit2=%u -> %s I2C threshold)",
+			analog_cfg, (unsigned int)((analog_cfg >> 2) & 1U),
+			(analog_cfg & 0x0004) ? "1.8V" : "VDD-ref");
+		if (!(analog_cfg & 0x0004)) {
+			LOG_WRN("MLX90642 0x11FC bit2=0: VDD-referenced threshold active. "
+				"1.8V I2C (nRF5340) will be unreliable! "
+				"Use a 3.3V I2C master to set bit 2 first.");
+		}
+	} else {
+		LOG_WRN("MLX90642 could not read 0x11FC (analog config)");
+	}
+
 	int16_t ta_raw = 0;
 	(void)readAddr_signed(MLX90642_TA_ADDR, ta_raw);
-	LOG_INF("MLX90642 online at 0x%02X, Ta=%.2f degC, refresh code=%u",
+
+	LOG_INF("MLX90642 online at 0x%02X, Ta=%.2f degC, progress=%u%%, refresh=%u",
 		_deviceAddress, (double)ta_raw / (double)MLX90642_TA_SCALE,
-		getRefreshRateCode());
+		(unsigned int)probe, getRefreshRateCode());
+	LOG_INF("MLX90642 FW=%u.%u.%u, devID[0..1]=0x%04X%04X, EEPROM SA=0x%02X",
+		(unsigned int)(fw_lo >> 8) & 0xFFU,
+		(unsigned int)(fw_hi & 0xFFU),
+		(unsigned int)((fw_hi >> 8) & 0xFFU),
+		id0, id1, (unsigned int)(sa_eep & 0x7FU));
 	return true;
 }
 

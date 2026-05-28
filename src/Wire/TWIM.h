@@ -46,3 +46,12 @@ class TWIM
 extern TWIM I2C1;
 extern TWIM I2C2;
 extern TWIM I2C3;
+
+/* Project naming aliases:
+ * IIC0 -> Zephyr &i2c1 (P0.24/P0.21)
+ * IIC1 -> Zephyr &i2c2 (P1.00/P1.15)
+ * IIC2 -> Zephyr &i2c3 (P1.02/P1.03)
+ */
+extern TWIM &IIC0;
+extern TWIM &IIC1;
+extern TWIM &IIC2;

@@ -36,6 +36,46 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(power_manager, LOG_LEVEL_DBG);
 
+static const char *pm_state_name(enum pm_device_state state)
+{
+	switch (state) {
+	case PM_DEVICE_STATE_ACTIVE:
+		return "ACTIVE";
+	case PM_DEVICE_STATE_SUSPENDED:
+		return "SUSPENDED";
+	case PM_DEVICE_STATE_SUSPENDING:
+		return "SUSPENDING";
+	case PM_DEVICE_STATE_OFF:
+		return "OFF";
+	default:
+		return "UNKNOWN";
+	}
+}
+
+static void log_power_diag_snapshot(const char *tag)
+{
+	enum pm_device_state s18 = PM_DEVICE_STATE_OFF;
+	enum pm_device_state s33 = PM_DEVICE_STATE_OFF;
+	const int s18_ret = pm_device_state_get(ls_1_8, &s18);
+	const int s33_ret = pm_device_state_get(ls_3_3, &s33);
+
+	battery_controller.exit_high_impedance();
+	const uint8_t ls_ldo = battery_controller.read_ls_ldo_ctrl_raw();
+	const uint8_t charge_ctrl = battery_controller.read_charge_ctrl_raw();
+	const uint8_t fault = battery_controller.read_fault();
+	const uint8_t ctrl = battery_controller.read_charging_state();
+	battery_controller.enter_high_impedance();
+
+	LOG_INF("[PWR_DIAG:%s] CHARGE_CTRL=0x%02X LS_LDO_CTRL=0x%02X CTRL=0x%02X FAULT=0x%02X",
+		tag, charge_ctrl, ls_ldo, ctrl, fault);
+	LOG_INF("[PWR_DIAG:%s] ls_1_8 en=%d state=%s ret=%d | ls_3_3 en=%d state=%s ret=%d",
+		tag,
+		pm_device_runtime_is_enabled(ls_1_8) ? 1 : 0,
+		pm_state_name(s18), s18_ret,
+		pm_device_runtime_is_enabled(ls_3_3) ? 1 : 0,
+		pm_state_name(s33), s33_ret);
+}
+
 //K_TIMER_DEFINE(PowerManager::charge_timer, PowerManager::charge_timer_handler, NULL);
 
 K_WORK_DELAYABLE_DEFINE(PowerManager::charge_ctrl_delayable, PowerManager::charge_ctrl_work_handler);
@@ -305,6 +345,7 @@ int PowerManager::begin() {
     }*/
 
     battery_controller.setup(_battery_settings);
+    log_power_diag_snapshot("after_setup");
     battery_controller.set_int_callback(battery_controller_callback);
 
     // check setup
@@ -327,18 +368,16 @@ int PowerManager::begin() {
     // check charging state
     bool charging = battery_controller.power_connected();
 
-    if (!battery_condition) {
+    if (IS_ENABLED(CONFIG_OPENEARABLE_ADAU_I2C_TEST_FORCE_POWER_ON)) {
+        LOG_WRN("ADAU I2C test: forcing power-on to reach audio initialization");
+        power_on = true;
+    } else if (!battery_condition) {
         power_on = false;
         // LOG_ERR("Bad battery condition.");
         if (!charging){
             //TODO: Flash red LED once
             return power_down(false);
         }
-    }
-
-    if (IS_ENABLED(CONFIG_OPENEARABLE_ADAU_I2C_TEST_FORCE_POWER_ON)) {
-        LOG_WRN("ADAU I2C test: forcing power-on to reach audio initialization");
-        power_on = true;
     }
 
     if (charging) {
@@ -399,6 +438,18 @@ int PowerManager::begin() {
     if (ret != 0) {
         LOG_WRN("Error setting up load switch SD.");
     }
+
+    if (IS_ENABLED(CONFIG_OPENEARABLE_FORCE_RAILS_ALWAYS_ON)) {
+        LOG_WRN("PWR_DIAG: forcing rails always on (diagnostic mode)");
+        /* Keep PMIC/load switch outputs out of sleep/high-Z path. */
+        battery_controller.exit_high_impedance();
+        (void)battery_controller.write_LDO_voltage_control(3.3f);
+        (void)battery_controller.write_LS_control(true);
+        (void)pm_device_runtime_get(ls_1_8);
+        (void)pm_device_runtime_get(ls_3_3);
+    }
+
+    log_power_diag_snapshot("after_runtime_enable");
 
     ret = device_is_ready(error_led.port); //bool
     if (!ret) {
@@ -613,6 +664,12 @@ int PowerManager::power_down(bool fault) {
     stop_sensor_manager();
 
     bool charging = battery_controller.power_connected();
+    log_power_diag_snapshot("power_down_entry");
+
+    if (IS_ENABLED(CONFIG_OPENEARABLE_FORCE_RAILS_ALWAYS_ON)) {
+        LOG_WRN("PWR_DIAG: power_down blocked by OPENEARABLE_FORCE_RAILS_ALWAYS_ON");
+        return 0;
+    }
 
     if (!charging) {
         ret = battery_controller.set_wakeup_int();

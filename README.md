@@ -278,7 +278,7 @@ Refresh rates (EEPROM `0x11F0` bits 0:2):
 
 BLE transport (sensor ID `8`, `ID_THERMAL`):
 
-Each thermal frame is split into **43 chunks** (18 pixels per chunk, last chunk 12 pixels). All chunks of one frame share the same `sensor_data.time` timestamp.
+Each thermal frame is split into **48 chunks** (16 pixels per chunk). All chunks of one frame share the same `sensor_data.time` timestamp. The 16-pixel chunk size perfectly aligns with half-rows (width 32), meaning missing chunks no longer cause pixel stitching misalignments across row boundaries.
 
 Per-packet payload (after the 10-byte `sensor_data` header):
 
@@ -295,7 +295,7 @@ Web test steps:
 3. Scroll to the **Thermal IR Camera** panel at the bottom of the page.
 4. Select refresh rate (default **4 Hz**).
 5. Click **Start Thermal**.
-6. The 32×24 heatmap should update; metrics show FPS, Min/Max/Avg °C, and chunk progress (`43/43`).
+6. The 32×24 heatmap should update; metrics show FPS, Min/Max/Avg °C, and chunk progress (`48/48`).
 
 Alternatively, use the generic **Sensor Stream** controls: select `Thermal IR`, set rate index, **Enable Stream**, and **Subscribe Data**.
 
@@ -306,7 +306,7 @@ Alternatively, use the generic **Sensor Stream** controls: select `Thermal IR`, 
 - The frequency estimator is unreliable when the signal is close to the noise floor.
 - The 96 kHz experiment branch did not solve low-frequency display quality; this branch stays on 48 kHz and improves the preview windowing instead.
 - True raw long-window audio capture should use SD card, USB, RTT, or a dedicated streaming protocol instead of this BLE preview characteristic.
-- Thermal IR at 8 Hz sends ~344 BLE packets/s (43 chunks × 8 frames); use 4 Hz for a safer margin on congested links.
+- Thermal IR at 8 Hz sends 384 BLE packets/s (48 chunks × 8 frames); use 4 Hz for a safer margin on congested links. The Web UI now renders incomplete frames if packets drop to prevent freezing.
 - The existing `MLX90632` skin-temperature sensor on IIC1 / Zephyr `&i2c2` (`ID_OPTTEMP`) is unchanged; thermal IR is a separate sensor (`ID_THERMAL`).
 
 ## Useful Files

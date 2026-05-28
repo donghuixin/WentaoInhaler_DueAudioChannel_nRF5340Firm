@@ -100,7 +100,7 @@ const THERMAL_SAMPLE_RATE_INDEX = 1; // default 4 Hz
 const THERMAL_NUM_COLS = 32;
 const THERMAL_NUM_ROWS = 24;
 const THERMAL_NUM_PIXELS = THERMAL_NUM_COLS * THERMAL_NUM_ROWS;
-const THERMAL_PIXELS_PER_CHUNK = 18;
+const THERMAL_PIXELS_PER_CHUNK = 16;
 const THERMAL_TOTAL_CHUNKS = Math.ceil(THERMAL_NUM_PIXELS / THERMAL_PIXELS_PER_CHUNK);
 const THERMAL_RAW_TO_C = 1 / 50; // raw int16 / 50 = degrees Celsius
 
@@ -1285,10 +1285,19 @@ function decodeThermalChunk(value, payloadLength, time) {
   // wrapped back to zero. The firmware tags every chunk of one frame with
   // the same microsecond timestamp.
   if (thermalCurrentFrameTime !== time) {
-    // If the previous frame did not complete, count it as a drop.
-    if (thermalCurrentFrameTime !== null && thermalChunksThisFrame < THERMAL_TOTAL_CHUNKS) {
-      thermalDroppedFrames += 1;
-      els.thermalDropped.textContent = String(thermalDroppedFrames);
+    if (thermalCurrentFrameTime !== null) {
+      // If the previous frame did not complete, count it as a drop.
+      if (thermalChunksThisFrame < THERMAL_TOTAL_CHUNKS) {
+        thermalDroppedFrames += 1;
+        els.thermalDropped.textContent = String(thermalDroppedFrames);
+      }
+      
+      // Render the incomplete frame instead of dropping it entirely.
+      // The missing pixels will retain their previous values, which is
+      // much better than a frozen screen (severe packet loss).
+      if (thermalChunksThisFrame > 0) {
+        renderThermalFrame();
+      }
     }
     thermalCurrentFrameTime = time;
     resetThermalAssembly();

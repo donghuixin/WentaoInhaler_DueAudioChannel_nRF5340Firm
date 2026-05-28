@@ -25,10 +25,14 @@
 #include "openearable_common.h"
 #include "zbus_common.h"
 
-/* Wire format for chunked thermal frames. */
-#define THERMAL_PIXELS_PER_CHUNK 18U
-#define THERMAL_TOTAL_CHUNKS \
-	((MLX90642_NUM_PIXELS + THERMAL_PIXELS_PER_CHUNK - 1U) / THERMAL_PIXELS_PER_CHUNK)
+/* Wire format for chunked thermal frames. 
+ * 16 pixels (32 bytes) + 2 bytes header = 34 bytes payload.
+ * This perfectly aligns with half-rows (width 32) so missing chunks
+ * don't cause pixel stitching misalignments across row boundaries.
+ * 768 pixels / 16 pixels per chunk = 48 chunks exactly.
+ */
+#define THERMAL_PIXELS_PER_CHUNK 16U
+#define THERMAL_TOTAL_CHUNKS     48U
 
 class Thermal : public EdgeMlSensor {
 public:

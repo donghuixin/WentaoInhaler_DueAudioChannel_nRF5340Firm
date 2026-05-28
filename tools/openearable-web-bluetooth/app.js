@@ -100,8 +100,8 @@ const THERMAL_SAMPLE_RATE_INDEX = 1; // default 4 Hz
 const THERMAL_NUM_COLS = 32;
 const THERMAL_NUM_ROWS = 24;
 const THERMAL_NUM_PIXELS = THERMAL_NUM_COLS * THERMAL_NUM_ROWS;
-const THERMAL_PIXELS_PER_CHUNK = 16;
-const THERMAL_TOTAL_CHUNKS = Math.ceil(THERMAL_NUM_PIXELS / THERMAL_PIXELS_PER_CHUNK);
+let thermalPixelsPerChunk = 16;
+let thermalTotalChunks = Math.ceil(THERMAL_NUM_PIXELS / thermalPixelsPerChunk);
 const THERMAL_RAW_TO_C = 1 / 50; // raw int16 / 50 = degrees Celsius
 
 const els = {
@@ -185,6 +185,7 @@ const els = {
   thermalMax: document.querySelector('#thermalMax'),
   thermalAvg: document.querySelector('#thermalAvg'),
   thermalDropped: document.querySelector('#thermalDropped'),
+  thermalDebugInfo: document.querySelector('#thermalDebugInfo'),
   thermalLastTime: document.querySelector('#thermalLastTime'),
   readHwStatusBtn: document.querySelector('#readHwStatusBtn'),
   hwStatusTime: document.querySelector('#hwStatusTime'),
@@ -1276,6 +1277,13 @@ function decodeThermalChunk(value, payloadLength, time) {
 
   const chunkIdx = value.getUint8(10);
   const count = value.getUint8(11);
+  
+  // Auto-detect firmware chunk size to be compatible with both old (18px) and new (16px) versions
+  if (count === 18) thermalPixelsPerChunk = 18;
+  else if (count === 16) thermalPixelsPerChunk = 16;
+  else if (count === 12 && thermalPixelsPerChunk !== 18) thermalPixelsPerChunk = 18; // last chunk of 18px firmware
+  thermalTotalChunks = Math.ceil(THERMAL_NUM_PIXELS / thermalPixelsPerChunk);
+
   const expectedBytes = 2 + count * 2;
   if (count === 0 || expectedBytes > payloadLength) {
     return `bad thermal chunk idx=${chunkIdx} count=${count} payload=${payloadLength}B`;
@@ -1287,9 +1295,9 @@ function decodeThermalChunk(value, payloadLength, time) {
   if (thermalCurrentFrameTime !== time) {
     if (thermalCurrentFrameTime !== null) {
       // If the previous frame did not complete, count it as a drop.
-      if (thermalChunksThisFrame < THERMAL_TOTAL_CHUNKS) {
+      if (thermalChunksThisFrame < thermalTotalChunks) {
         thermalDroppedFrames += 1;
-        els.thermalDropped.textContent = String(thermalDroppedFrames);
+        if (els.thermalDropped) els.thermalDropped.textContent = String(thermalDroppedFrames);
       }
       
       // Render the incomplete frame instead of dropping it entirely.
@@ -1303,11 +1311,11 @@ function decodeThermalChunk(value, payloadLength, time) {
     resetThermalAssembly();
   }
 
-  if (chunkIdx >= THERMAL_TOTAL_CHUNKS) {
-    return `bad thermal chunk idx=${chunkIdx} (max ${THERMAL_TOTAL_CHUNKS - 1})`;
+  if (chunkIdx >= thermalTotalChunks) {
+    return `bad thermal chunk idx=${chunkIdx} (max ${thermalTotalChunks - 1})`;
   }
 
-  const start = chunkIdx * THERMAL_PIXELS_PER_CHUNK;
+  const start = chunkIdx * thermalPixelsPerChunk;
   for (let i = 0; i < count; i++) {
     const dst = start + i;
     if (dst >= THERMAL_NUM_PIXELS) break;
@@ -1319,9 +1327,10 @@ function decodeThermalChunk(value, payloadLength, time) {
     thermalChunkReceived[chunkIdx] = 1;
     thermalChunksThisFrame += 1;
   }
-  els.thermalChunks.textContent = `${thermalChunksThisFrame}/${THERMAL_TOTAL_CHUNKS}`;
+  if (els.thermalChunks) els.thermalChunks.textContent = `${thermalChunksThisFrame}/${thermalTotalChunks}`;
+  if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `Stride: ${thermalPixelsPerChunk}px`;
 
-  if (thermalChunksThisFrame >= THERMAL_TOTAL_CHUNKS) {
+  if (thermalChunksThisFrame >= thermalTotalChunks) {
     renderThermalFrame();
     resetThermalAssembly();
     // Mark the current frame as "consumed" so the next packet (with a new
@@ -1329,7 +1338,7 @@ function decodeThermalChunk(value, payloadLength, time) {
     thermalCurrentFrameTime = null;
   }
 
-  return `chunk=${chunkIdx} count=${count} progress=${thermalChunksThisFrame}/${THERMAL_TOTAL_CHUNKS}`;
+  return `chunk=${chunkIdx} count=${count} progress=${thermalChunksThisFrame}/${thermalTotalChunks}`;
 }
 
 function resetThermalValues() {
@@ -1343,13 +1352,14 @@ function resetThermalValues() {
   thermalNotifyEnabled = false;
   if (els.thermalFrames) els.thermalFrames.textContent = '0';
   if (els.thermalFps) els.thermalFps.textContent = '-';
-  if (els.thermalChunks) els.thermalChunks.textContent = `0/${THERMAL_TOTAL_CHUNKS}`;
+  if (els.thermalChunks) els.thermalChunks.textContent = `0/${thermalTotalChunks}`;
   if (els.thermalMin) els.thermalMin.textContent = '-';
   if (els.thermalMax) els.thermalMax.textContent = '-';
   if (els.thermalAvg) els.thermalAvg.textContent = '-';
   if (els.thermalDropped) els.thermalDropped.textContent = '0';
   if (els.thermalLastTime) els.thermalLastTime.textContent = '-';
   if (els.thermalState) els.thermalState.textContent = 'Stream off';
+  if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = '-';
   const canvas = els.thermalCanvas;
   if (canvas) {
     const ctx = canvas.getContext('2d');

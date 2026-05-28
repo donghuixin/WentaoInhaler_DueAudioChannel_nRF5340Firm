@@ -3,127 +3,115 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>OpenEarable BLE Console</title>
+    <title>OpenEarable Pro Max Console</title>
     <link rel="stylesheet" href="style.css">
   </head>
   <body>
     <main class="app-shell">
-      <header class="topbar">
-        <div>
-          <h1>OpenEarable BLE Console</h1>
-          <p id="browserState" class="muted">Checking Web Bluetooth support...</p>
-        </div>
-        <div class="status-stack" aria-live="polite">
-          <span id="linkState" class="status-pill neutral">Idle</span>
-          <span id="deviceName" class="device-name">No device</span>
-        </div>
-      </header>
+      
+      <!-- SIDEBAR -->
+      <aside class="glass-panel sidebar">
+        <header class="topbar">
+          <h1>OpenEarable Pro Max</h1>
+          <p id="browserState" class="fine">Checking Web Bluetooth...</p>
+          <div style="display:flex; justify-content:space-between; margin-top:12px;">
+            <span id="linkState" class="status-pill warning">Idle</span>
+            <span id="deviceName" class="fine">No device</span>
+          </div>
+        </header>
 
-      <section class="toolbar" aria-label="Bluetooth actions">
-        <button id="scanBtn" type="button">Scan Advertisements</button>
-        <button id="connectNamedBtn" type="button">Connect OpenEarable</button>
-        <button id="connectAdvertisedBtn" type="button">Connect OE Advertised</button>
-        <button id="connectAnyBtn" type="button">Connect Any BLE</button>
-        <button id="disconnectBtn" type="button" disabled>Disconnect</button>
-        <button id="readBatteryBtn" type="button" disabled>Read Battery</button>
-        <button id="readHwStatusBtn" type="button" disabled>Read HW Status</button>
-        <button id="clearLogBtn" type="button">Clear Log</button>
-      </section>
+        <section class="toolbar button-stack">
+          <button id="scanBtn" class="primary" type="button">Scan Advertisements</button>
+          <button id="connectNamedBtn" type="button">Connect OpenEarable</button>
+          <button id="connectAdvertisedBtn" type="button">Connect OE Advertised</button>
+          <button id="connectAnyBtn" type="button">Connect Any BLE</button>
+          <button id="disconnectBtn" class="danger" type="button" disabled>Disconnect</button>
+        </section>
 
-      <section class="grid">
-        <article class="panel device-panel">
+        <section class="device-info">
           <div class="panel-head">
-            <h2>Device</h2>
+            <h3>Device Info</h3>
             <span id="gattState" class="fine">GATT disconnected</span>
           </div>
           <dl class="facts">
-            <div>
-              <dt>Name</dt>
-              <dd id="factName">-</dd>
-            </div>
-            <div>
-              <dt>Browser ID</dt>
-              <dd id="factId">-</dd>
-            </div>
-            <div>
-              <dt>Battery</dt>
-              <dd id="factBattery">-</dd>
-            </div>
-            <div>
-              <dt>Identifier</dt>
-              <dd id="factIdentifier">-</dd>
-            </div>
-            <div>
-              <dt>Generation</dt>
-              <dd id="factGeneration">-</dd>
-            </div>
-            <div>
-              <dt>Firmware</dt>
-              <dd id="factFirmware">-</dd>
-            </div>
-            <div>
-              <dt>Audio Channel</dt>
-              <dd id="factAudioChannel">-</dd>
-            </div>
+            <div><dt>Battery</dt><dd id="factBattery">-</dd></div>
+            <div><dt>Browser ID</dt><dd id="factId">-</dd></div>
+            <div><dt>Firmware</dt><dd id="factFirmware">-</dd></div>
+            <div><dt>Audio Channel</dt><dd id="factAudioChannel">-</dd></div>
           </dl>
+          <div class="button-row">
+            <button id="readBatteryBtn" type="button" disabled>Read Battery</button>
+            <button id="readHwStatusBtn" type="button" disabled>HW Status</button>
+          </div>
+        </section>
+
+        <section class="diagnostics">
+          <div class="panel-head">
+            <h3>Diagnostic Tips</h3>
+          </div>
+          <dl class="facts">
+            <div><dt>DFU Name</dt><dd class="fine">OpenEarable_L_DFU</dd></div>
+            <div><dt>UUID</dt><dd class="fine">34c2e3bb...0002</dd></div>
+          </dl>
+        </section>
+      </aside>
+
+      <!-- DASHBOARD GRID -->
+      <div class="dashboard">
+        
+        <!-- THERMAL CAMERA PANEL -->
+        <article class="glass-panel panel">
+          <div class="panel-head">
+            <h2>Thermal IR Camera</h2>
+            <span id="thermalState" class="fine">Stream off</span>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="thermalCanvas" class="thermal-canvas" width="384" height="288"></canvas>
+          </div>
+          
+          <div class="form-row">
+            <label for="thermalRateIndex">Refresh</label>
+            <select id="thermalRateIndex">
+              <option value="0">2 Hz</option>
+              <option value="1" selected>4 Hz</option>
+              <option value="2">8 Hz</option>
+            </select>
+            <label for="thermalPalette">Palette</label>
+            <select id="thermalPalette">
+              <option value="iron" selected>Iron</option>
+              <option value="jet">Jet</option>
+              <option value="gray">Grayscale</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label for="thermalAutoScale">Auto Range</label>
+            <input id="thermalAutoScale" type="checkbox" checked>
+            <label for="thermalMinTemp">Min &deg;C</label>
+            <input id="thermalMinTemp" type="number" value="20" step="1" style="width:5em">
+            <label for="thermalMaxTemp">Max &deg;C</label>
+            <input id="thermalMaxTemp" type="number" value="40" step="1" style="width:5em">
+          </div>
+          <div class="button-row">
+            <button id="startThermalBtn" class="primary" type="button" disabled>Start Thermal</button>
+            <button id="stopThermalBtn" class="danger" type="button" disabled>Stop Thermal</button>
+          </div>
+          <div class="metric-grid">
+            <div><span class="metric-label">Frames</span><strong id="thermalFrames">0</strong></div>
+            <div><span class="metric-label">FPS</span><strong id="thermalFps">-</strong></div>
+            <div><span class="metric-label">Chunks</span><strong id="thermalChunks">0/48</strong></div>
+            <div><span class="metric-label">Min &deg;C</span><strong id="thermalMin">-</strong></div>
+            <div><span class="metric-label">Max &deg;C</span><strong id="thermalMax">-</strong></div>
+            <div><span class="metric-label">Avg &deg;C</span><strong id="thermalAvg">-</strong></div>
+            <div><span class="metric-label">Dropped</span><strong id="thermalDropped" style="color:var(--danger)">0</strong></div>
+            <div><span class="metric-label">Debug Info</span><strong id="thermalDebugInfo">-</strong></div>
+            <div><span class="metric-label">Last Frame</span><strong id="thermalLastTime">-</strong></div>
+          </div>
         </article>
 
-        <article class="panel hw-status-panel">
+        <!-- SENSOR STREAM & IMU PANEL -->
+        <article class="glass-panel panel">
           <div class="panel-head">
-            <h2>Hardware Status</h2>
-            <span id="hwStatusSummary" class="fine">尚未读取</span>
-          </div>
-          <div class="hw-status-meta fine">
-            <span>更新时间:</span>
-            <strong id="hwStatusTime">-</strong>
-          </div>
-          <div class="hw-table-wrap">
-            <h3>I2C Bus Scan</h3>
-            <table class="hw-table">
-              <thead>
-                <tr>
-                  <th>Bus</th>
-                  <th>Ready</th>
-                  <th>Count</th>
-                  <th>Detected Addresses</th>
-                </tr>
-              </thead>
-              <tbody id="i2cBusTableBody">
-                <tr><td colspan="4" class="fine">无数据</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="hw-table-wrap">
-            <h3>Mounted Devices</h3>
-            <table class="hw-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Bus</th>
-                  <th>Address</th>
-                  <th>Status</th>
-                  <th>Type</th>
-                </tr>
-              </thead>
-              <tbody id="hwStatusTableBody">
-                <tr><td colspan="5" class="fine">无数据</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="hw-table-wrap">
-            <h3>Boot Init Log</h3>
-            <pre id="hwBootLog" class="hw-log-pre fine">无数据</pre>
-          </div>
-          <div class="hw-table-wrap">
-            <h3>Recent Activity (scan / runtime)</h3>
-            <pre id="hwRecentLog" class="hw-log-pre fine">无数据</pre>
-            <div class="fine" id="hwLogDropped">dropped: boot=0, recent=0</div>
-          </div>
-        </article>
-
-        <article class="panel controls-panel">
-          <div class="panel-head">
-            <h2>Sensor Stream</h2>
+            <h2>Sensor Stream & IMU</h2>
             <span id="notifyState" class="fine">Notifications off</span>
           </div>
           <div class="form-row">
@@ -137,87 +125,47 @@
               <option value="7">Bone Conduct.</option>
               <option value="8">Thermal IR</option>
             </select>
-          </div>
-          <div class="form-row">
-            <label for="sampleRateIndex">Rate Index</label>
-            <input id="sampleRateIndex" type="number" min="0" max="255" value="1">
+            <label for="sampleRateIndex">Rate Idx</label>
+            <input id="sampleRateIndex" type="number" min="0" max="255" value="1" style="width:4em">
           </div>
           <div class="button-row">
-            <button id="startImuBtn" type="button" disabled>Start IMU</button>
+            <button id="enableSensorBtn" class="primary" type="button" disabled>Enable Stream</button>
+            <button id="disableSensorBtn" class="danger" type="button" disabled>Disable Sensor</button>
+            <button id="subscribeSensorBtn" class="primary" type="button" disabled>Sub Data</button>
+            <button id="subscribeStatusBtn" type="button" disabled>Sub Status</button>
+          </div>
+          <div class="button-row">
+            <button id="startImuBtn" type="button" disabled>Start IMU Preset</button>
             <button id="stopImuBtn" type="button" disabled>Stop IMU</button>
           </div>
-          <div class="button-row">
-            <button id="enableSensorBtn" type="button" disabled>Enable Stream</button>
-            <button id="disableSensorBtn" type="button" disabled>Disable Sensor</button>
-          </div>
-          <div class="button-row">
-            <button id="subscribeSensorBtn" type="button" disabled>Subscribe Data</button>
-            <button id="subscribeStatusBtn" type="button" disabled>Subscribe Status</button>
-          </div>
           <div class="metric-grid">
-            <div>
-              <span class="metric-label">Packets</span>
-              <strong id="packetCount">0</strong>
-            </div>
-            <div>
-              <span class="metric-label">Last Sensor</span>
-              <strong id="lastSensor">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Payload</span>
-              <strong id="lastPayload">-</strong>
-            </div>
+            <div><span class="metric-label">Packets</span><strong id="packetCount">0</strong></div>
+            <div><span class="metric-label">Last Sensor</span><strong id="lastSensor">-</strong></div>
+            <div><span class="metric-label">Payload</span><strong id="lastPayload">-</strong></div>
           </div>
           <div class="imu-live" aria-label="IMU live values">
-            <div>
-              <span class="metric-label">Time</span>
-              <strong id="imuTime">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Accel X</span>
-              <strong id="imuAx">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Accel Y</span>
-              <strong id="imuAy">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Accel Z</span>
-              <strong id="imuAz">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Gyro X</span>
-              <strong id="imuGx">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Gyro Y</span>
-              <strong id="imuGy">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Gyro Z</span>
-              <strong id="imuGz">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Mag X</span>
-              <strong id="imuMx">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Mag Y</span>
-              <strong id="imuMy">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Mag Z</span>
-              <strong id="imuMz">-</strong>
-            </div>
+            <div><span class="metric-label">Time</span><strong id="imuTime">-</strong></div>
+            <div><span class="metric-label">Accel X</span><strong id="imuAx">-</strong></div>
+            <div><span class="metric-label">Accel Y</span><strong id="imuAy">-</strong></div>
+            <div><span class="metric-label">Accel Z</span><strong id="imuAz">-</strong></div>
+            <div><span class="metric-label">Gyro X</span><strong id="imuGx">-</strong></div>
+            <div><span class="metric-label">Gyro Y</span><strong id="imuGy">-</strong></div>
+            <div><span class="metric-label">Gyro Z</span><strong id="imuGz">-</strong></div>
+            <div><span class="metric-label">Mag X</span><strong id="imuMx">-</strong></div>
+            <div><span class="metric-label">Mag Y</span><strong id="imuMy">-</strong></div>
+            <div><span class="metric-label">Mag Z</span><strong id="imuMz">-</strong></div>
           </div>
         </article>
 
-        <article class="panel audio-panel">
+        <!-- AUDIO WAVEFORM PANEL -->
+        <article class="glass-panel panel">
           <div class="panel-head">
             <h2>Audio Waveform</h2>
             <span id="audioWaveState" class="fine">Preview off</span>
           </div>
-          <canvas id="audioWaveCanvas" class="wave-canvas" width="420" height="180"></canvas>
+          <div class="canvas-wrapper">
+            <canvas id="audioWaveCanvas" class="wave-canvas" width="420" height="180"></canvas>
+          </div>
           <div class="form-row">
             <label for="audioWindowMode">Window</label>
             <select id="audioWindowMode">
@@ -226,185 +174,94 @@
               <option value="2" selected>50 ms low</option>
               <option value="3">100 ms low</option>
             </select>
+            <button id="readAudioWaveBtn" type="button" disabled style="margin-left:auto;">Read Latest</button>
           </div>
           <div class="button-row">
-            <button id="startAudioWaveBtn" type="button" disabled>Start Wave</button>
-            <button id="stopAudioWaveBtn" type="button" disabled>Stop Wave</button>
+            <button id="startAudioWaveBtn" class="primary" type="button" disabled>Start Wave</button>
+            <button id="stopAudioWaveBtn" class="danger" type="button" disabled>Stop Wave</button>
           </div>
-          <div class="button-row single-action">
-            <button id="readAudioWaveBtn" type="button" disabled>Read Latest Packet</button>
-          </div>
-          <div class="metric-grid audio-metrics">
-            <div>
-              <span class="metric-label">Seq</span>
-              <strong id="audioSeq">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Rate</span>
-              <strong id="audioRate">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Sample Interval</span>
-              <strong id="audioSampleInterval">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Frames</span>
-              <strong id="audioFrames">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Peak</span>
-              <strong id="audioPeak">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Mean Abs</span>
-              <strong id="audioMean">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Frequency</span>
-              <strong id="audioFrequency">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Samples/Cycle</span>
-              <strong id="audioSamplesPerCycle">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Peak-to-Peak</span>
-              <strong id="audioPeakToPeak">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Estimate</span>
-              <strong id="audioFrequencyConfidence">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">Plot Scale</span>
-              <strong id="audioPlotScale">-</strong>
-            </div>
-            <div>
-              <span class="metric-label">BLE Packet</span>
-              <strong id="audioPacketInfo">-</strong>
-            </div>
+          <div class="metric-grid">
+            <div><span class="metric-label">Seq</span><strong id="audioSeq">-</strong></div>
+            <div><span class="metric-label">Rate</span><strong id="audioRate">-</strong></div>
+            <div><span class="metric-label">Frames</span><strong id="audioFrames">-</strong></div>
+            <div><span class="metric-label">Peak</span><strong id="audioPeak">-</strong></div>
+            <div><span class="metric-label">Mean Abs</span><strong id="audioMean">-</strong></div>
+            <div><span class="metric-label">Frequency</span><strong id="audioFrequency">-</strong></div>
+            <div><span class="metric-label">Estimate</span><strong id="audioFrequencyConfidence">-</strong></div>
+            <div><span class="metric-label">Plot Scale</span><strong id="audioPlotScale">-</strong></div>
+            <div><span class="metric-label">Packet Info</span><strong id="audioPacketInfo">-</strong></div>
           </div>
         </article>
 
-        <article class="panel services-panel">
+        <!-- LOG & SERVICES PANEL -->
+        <article class="glass-panel panel terminal-panel">
           <div class="panel-head">
-            <h2>Services</h2>
-            <span id="serviceCount" class="fine">0 found</span>
+            <h2>Terminal Log</h2>
+            <div>
+              <span id="lastEvent" class="fine" style="margin-right: 12px;">No events</span>
+              <button id="clearLogBtn" type="button" style="padding: 4px 8px;">Clear</button>
+            </div>
           </div>
-          <div id="servicesList" class="service-list"></div>
+          <pre id="log"></pre>
         </article>
 
-        <article class="panel adv-panel">
+        <!-- HARDWARE STATUS PANEL -->
+        <article class="glass-panel panel" style="grid-column: 1 / -1;">
           <div class="panel-head">
-            <h2>Advertisements</h2>
-            <span id="scanState" class="fine">Not scanning</span>
+            <h2>Hardware Status</h2>
+            <span id="hwStatusSummary" class="fine">Not read yet</span>
           </div>
-          <div id="advertisements" class="adv-list"></div>
+          <div class="hw-status-meta fine">
+            <span>Last Updated:</span> <strong id="hwStatusTime">-</strong>
+          </div>
+          
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div class="hw-table-wrap">
+              <h3>I2C Bus Scan</h3>
+              <table class="hw-table">
+                <thead><tr><th>Bus</th><th>Ready</th><th>Count</th><th>Detected</th></tr></thead>
+                <tbody id="i2cBusTableBody"><tr><td colspan="4" class="fine">No data</td></tr></tbody>
+              </table>
+            </div>
+            <div class="hw-table-wrap">
+              <h3>Mounted Devices</h3>
+              <table class="hw-table">
+                <thead><tr><th>Name</th><th>Bus</th><th>Address</th><th>Status</th><th>Type</th></tr></thead>
+                <tbody id="hwStatusTableBody"><tr><td colspan="5" class="fine">No data</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div class="hw-table-wrap">
+              <h3>Boot Init Log</h3>
+              <pre id="hwBootLog" class="hw-log-pre fine">No data</pre>
+            </div>
+            <div class="hw-table-wrap">
+              <h3>Recent Activity</h3>
+              <pre id="hwRecentLog" class="hw-log-pre fine">No data</pre>
+              <div class="fine" id="hwLogDropped" style="margin-top:4px;">dropped: boot=0, recent=0</div>
+            </div>
+          </div>
         </article>
-      </section>
+      </div>
 
-      <section class="panel diagnostics">
-        <div class="panel-head">
-          <h2>Expected Signals</h2>
-          <span class="fine">OpenEarable v2</span>
-        </div>
-        <div class="diagnostic-grid">
-          <div>
-            <span class="metric-label">Normal name</span>
-            <code>OpenEarable-XXXX</code>
-          </div>
-          <div>
-            <span class="metric-label">DFU name</span>
-            <code>OpenEarable_L_DFU</code>
-            <code>OpenEarable_R_DFU</code>
-          </div>
-          <div>
-            <span class="metric-label">Primary UUID</span>
-            <code>34c2e3bb-34aa-11eb-adc1-0242ac120002</code>
-          </div>
-          <div>
-            <span class="metric-label">After mass erase</span>
-            <code>UICR channel + HW revision must be written again</code>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel log-panel">
-        <div class="panel-head">
-          <h2>Log</h2>
-          <span id="lastEvent" class="fine">No events</span>
-        </div>
-        <pre id="log"></pre>
-      </section>
-
-      <section class="panel thermal-panel">
-        <div class="panel-head">
-          <h2>Thermal IR Camera</h2>
-          <span id="thermalState" class="fine">Stream off</span>
-        </div>
-        <canvas id="thermalCanvas" class="thermal-canvas" width="384" height="288"></canvas>
-        <div class="form-row">
-          <label for="thermalRateIndex">Refresh</label>
-          <select id="thermalRateIndex">
-            <option value="0">2 Hz</option>
-            <option value="1" selected>4 Hz</option>
-            <option value="2">8 Hz</option>
-          </select>
-          <label for="thermalPalette">Palette</label>
-          <select id="thermalPalette">
-            <option value="iron" selected>Iron</option>
-            <option value="jet">Jet</option>
-            <option value="gray">Grayscale</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label for="thermalAutoScale">Auto Range</label>
-          <input id="thermalAutoScale" type="checkbox" checked>
-          <label for="thermalMinTemp">Min &deg;C</label>
-          <input id="thermalMinTemp" type="number" value="20" step="1" style="width:6em">
-          <label for="thermalMaxTemp">Max &deg;C</label>
-          <input id="thermalMaxTemp" type="number" value="40" step="1" style="width:6em">
-        </div>
-        <div class="button-row">
-          <button id="startThermalBtn" type="button" disabled>Start Thermal</button>
-          <button id="stopThermalBtn" type="button" disabled>Stop Thermal</button>
-        </div>
-        <div class="metric-grid thermal-metrics">
-          <div>
-            <span class="metric-label">Frames</span>
-            <strong id="thermalFrames">0</strong>
-          </div>
-          <div>
-            <span class="metric-label">FPS</span>
-            <strong id="thermalFps">-</strong>
-          </div>
-          <div>
-            <span class="metric-label">Chunks</span>
-            <strong id="thermalChunks">0/43</strong>
-          </div>
-          <div>
-            <span class="metric-label">Min &deg;C</span>
-            <strong id="thermalMin">-</strong>
-          </div>
-          <div>
-            <span class="metric-label">Max &deg;C</span>
-            <strong id="thermalMax">-</strong>
-          </div>
-          <div>
-            <span class="metric-label">Avg &deg;C</span>
-            <strong id="thermalAvg">-</strong>
-          </div>
-          <div>
-            <span class="metric-label">Dropped</span>
-            <strong id="thermalDropped">0</strong>
-          </div>
-          <div>
-            <span class="metric-label">Last Frame</span>
-            <strong id="thermalLastTime">-</strong>
-          </div>
-        </div>
-      </section>
     </main>
-    <script src="app.js?v=20260520-thermal-ir" type="module"></script>
+    
+    <!-- Hide the advert/services panel elements but keep them in DOM for JS compatibility -->
+    <div style="display:none;">
+      <span id="factName">-</span>
+      <span id="factIdentifier">-</span>
+      <span id="factGeneration">-</span>
+      <span id="serviceCount">-</span>
+      <div id="servicesList"></div>
+      <span id="scanState">-</span>
+      <div id="advertisements"></div>
+      <span id="audioSampleInterval">-</span>
+      <span id="audioSamplesPerCycle">-</span>
+      <span id="audioPeakToPeak">-</span>
+    </div>
+
+    <script src="app.js?v=20260528-promax" type="module"></script>
   </body>
 </html>

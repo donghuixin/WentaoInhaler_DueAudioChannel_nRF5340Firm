@@ -170,6 +170,10 @@ const els = {
   audioPlotScale: document.querySelector('#audioPlotScale'),
   audioPacketInfo: document.querySelector('#audioPacketInfo'),
   audioWaveCanvas: document.querySelector('#audioWaveCanvas'),
+  recordAudioBtn: document.querySelector('#recordAudioBtn'),
+  playAudioBtn: document.querySelector('#playAudioBtn'),
+  recordStatus: document.querySelector('#recordStatus'),
+  playbackVolume: document.querySelector('#playbackVolume'),
   thermalCanvas: document.querySelector('#thermalCanvas'),
   thermalState: document.querySelector('#thermalState'),
   thermalRateIndex: document.querySelector('#thermalRateIndex'),
@@ -218,6 +222,12 @@ let lastAudioPeak = 0;
 let lastAudioDurationMs = 0;
 let lastAudioPointRate = 0;
 let audioWindowAssembly = null;
+
+let isRecordingAudio = false;
+let recordedAudioBuffer = [];
+let recordedAudioPointRate = 0;
+let playbackAudioContext = null;
+let currentAudioSource = null;
 
 // Thermal IR streaming state. The frame buffer holds raw int16 values from
 // the MLX90642 (raw / 50 = degrees Celsius); we render the most recent
@@ -505,6 +515,8 @@ function setConnectedUi(isConnected) {
   els.stopImuBtn.disabled = !isConnected || !sensorConfigChar;
   els.startAudioWaveBtn.disabled = !isConnected || !sensorConfigChar || !audioWaveformControlChar || !audioWaveformDataChar;
   els.stopAudioWaveBtn.disabled = !isConnected || !audioWaveformControlChar;
+  els.recordAudioBtn.disabled = !isConnected || !audioWaveformControlChar;
+  els.playAudioBtn.disabled = recordedAudioBuffer.length === 0;
   els.readAudioWaveBtn.disabled = !isConnected || !audioWaveformDataChar;
   els.enableSensorBtn.disabled = !isConnected || !sensorConfigChar;
   els.disableSensorBtn.disabled = !isConnected || !sensorConfigChar;
@@ -539,6 +551,14 @@ function resetConnectionState() {
   els.lastPayload.textContent = '-';
   resetImuValues();
   resetAudioWaveformValues();
+
+  isRecordingAudio = false;
+  recordedAudioBuffer = [];
+  els.recordAudioBtn.textContent = '⏺ Record';
+  els.recordAudioBtn.disabled = true;
+  els.playAudioBtn.disabled = true;
+  els.recordStatus.textContent = '0.0s';
+
   resetThermalValues();
   els.notifyState.textContent = 'Notifications off';
   els.deviceName.textContent = 'No device';
@@ -1544,6 +1564,18 @@ function decodeAudioWaveformPacket(value) {
     lastAudioPeak = peak;
     lastAudioDurationMs = durationMs;
     lastAudioPointRate = pointRate;
+    
+    // Save to recording buffer if active
+    if (complete && isRecordingAudio) {
+      if (recordedAudioPointRate === 0) recordedAudioPointRate = pointRate;
+      for (let i = 0; i < assembledSamples.length; i++) {
+        recordedAudioBuffer.push(assembledSamples[i]);
+      }
+      const recordedSecs = (recordedAudioBuffer.length / recordedAudioPointRate).toFixed(1);
+      els.recordStatus.textContent = `${recordedSecs}s`;
+      els.playAudioBtn.disabled = false;
+    }
+
     drawAudioWaveform(lastAudioSamples, {
       peak,
       durationMs,
@@ -1943,3 +1975,101 @@ window.addEventListener('resize', () => drawAudioWaveform(lastAudioSamples, {
   durationMs: lastAudioDurationMs,
   pointRate: lastAudioPointRate
 }));
+
+if (els.themeToggleBtn) {
+  els.themeToggleBtn.addEventListener('click', () => {
+    const isLight = document.body.dataset.theme === 'light';
+    if (isLight) {
+      document.body.dataset.theme = 'dark';
+      els.themeToggleBtn.textContent = '☀ Switch to Day Mode';
+    } else {
+      document.body.dataset.theme = 'light';
+      els.themeToggleBtn.textContent = '🌙 Switch to Night Mode';
+    }
+  });
+}
+
+els.recordAudioBtn.addEventListener('click', () => {
+  if (isRecordingAudio) {
+    // Stop recording
+    isRecordingAudio = false;
+    els.recordAudioBtn.textContent = '⏺ Record';
+    els.recordAudioBtn.classList.add('danger');
+    els.recordAudioBtn.classList.remove('warning');
+  } else {
+    // Start recording
+    isRecordingAudio = true;
+    recordedAudioBuffer = [];
+    recordedAudioPointRate = 0;
+    els.recordStatus.textContent = '0.0s';
+    els.playAudioBtn.disabled = true;
+    els.recordAudioBtn.textContent = '⏹ Stop Recording';
+    els.recordAudioBtn.classList.remove('danger');
+    els.recordAudioBtn.classList.add('warning');
+  }
+});
+
+els.playAudioBtn.addEventListener('click', () => {
+  if (recordedAudioBuffer.length === 0 || recordedAudioPointRate === 0) return;
+
+  // Stop previous playback if exists
+  if (currentAudioSource) {
+    currentAudioSource.stop();
+    currentAudioSource.disconnect();
+    currentAudioSource = null;
+    els.playAudioBtn.textContent = '▶ Play';
+    return;
+  }
+
+  // Create AudioContext if not exists
+  if (!playbackAudioContext) {
+    playbackAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+
+  // Web Audio API requires a minimum sample rate of 8000 Hz.
+  // If the recorded rate is lower (e.g. 6000 Hz plot), we must upsample it.
+  let targetRate = recordedAudioPointRate;
+  let upsampleFactor = 1;
+  while (targetRate < 8000) {
+    targetRate *= 2;
+    upsampleFactor *= 2;
+  }
+
+  // Cap targetRate at max supported (96000) just in case
+  if (targetRate > 96000) targetRate = 96000;
+
+  const numSamples = recordedAudioBuffer.length * upsampleFactor;
+  const audioBuffer = playbackAudioContext.createBuffer(1, numSamples, targetRate);
+  const channelData = audioBuffer.getChannelData(0);
+
+  for (let i = 0; i < recordedAudioBuffer.length; i++) {
+    // Convert Int16 (-32768 to 32767) to Float32 (-1.0 to 1.0)
+    let floatVal = recordedAudioBuffer[i] / 32768.0;
+    
+    // Nearest-neighbor upsampling (repeat the sample)
+    for (let f = 0; f < upsampleFactor; f++) {
+      channelData[i * upsampleFactor + f] = floatVal;
+    }
+  }
+
+  currentAudioSource = playbackAudioContext.createBufferSource();
+  currentAudioSource.buffer = audioBuffer;
+
+  const gainNode = playbackAudioContext.createGain();
+  gainNode.gain.value = parseFloat(els.playbackVolume.value);
+  
+  els.playbackVolume.addEventListener('input', (e) => {
+    gainNode.gain.value = parseFloat(e.target.value);
+  });
+
+  currentAudioSource.connect(gainNode);
+  gainNode.connect(playbackAudioContext.destination);
+
+  currentAudioSource.onended = () => {
+    els.playAudioBtn.textContent = '▶ Play';
+    currentAudioSource = null;
+  };
+
+  currentAudioSource.start();
+  els.playAudioBtn.textContent = '⏹ Stop Playback';
+});

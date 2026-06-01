@@ -214,6 +214,122 @@
           </div>
         </article>
 
+        <!-- DATA LOGGER PANEL (Tabbed: SD Card / BLE) -->
+        <article class="glass-panel panel sd-logger-panel">
+          <div class="logger-tabs">
+            <button id="tabSdLogger" class="logger-tab active" type="button">SD Card Data Logger</button>
+            <button id="tabBleLogger" class="logger-tab" type="button">BLE Data Logger</button>
+          </div>
+
+          <!-- SD CARD TAB -->
+          <div id="sdLoggerTab" class="logger-tab-content active">
+            <div class="panel-head">
+              <h2>SD CARD DATA LOGGER</h2>
+              <span id="sdLoggerState" class="fine">Idle</span>
+            </div>
+            <div class="sd-logger-grid">
+              <label class="check-row" for="sdLoggerEnabled">
+                <input id="sdLoggerEnabled" type="checkbox">
+                <span>Use SD card</span>
+              </label>
+              <label class="check-row" for="sdLogImu">
+                <input id="sdLogImu" type="checkbox" checked>
+                <span>IMU</span>
+              </label>
+              <div class="form-row compact">
+                <label for="sdImuRateIndex">IMU rate</label>
+                <select id="sdImuRateIndex">
+                  <option value="0">25 Hz</option>
+                  <option value="1">50 Hz</option>
+                  <option value="2" selected>100 Hz</option>
+                  <option value="3">200 Hz</option>
+                  <option value="4">400 Hz</option>
+                  <option value="5">800 Hz</option>
+                </select>
+              </div>
+              <label class="check-row" for="sdLogThermal">
+                <input id="sdLogThermal" type="checkbox" checked>
+                <span>Thermal IR</span>
+              </label>
+              <div class="form-row compact">
+                <label for="sdThermalRateIndex">IR rate</label>
+                <select id="sdThermalRateIndex">
+                  <option value="0">2 Hz</option>
+                  <option value="1" selected>4 Hz</option>
+                  <option value="2">8 Hz</option>
+                </select>
+              </div>
+              <label class="check-row" for="sdLogAudio">
+                <input id="sdLogAudio" type="checkbox">
+                <span>Audio</span>
+              </label>
+              <div class="audio-channel-row">
+                <label class="check-row" for="sdAudioLeft">
+                  <input id="sdAudioLeft" type="checkbox" checked>
+                  <span>Left</span>
+                </label>
+                <label class="check-row" for="sdAudioRight">
+                  <input id="sdAudioRight" type="checkbox" checked>
+                  <span>Right</span>
+                </label>
+              </div>
+              <div class="form-row compact">
+                <label for="sdAudioRateIndex">Audio rate</label>
+                <select id="sdAudioRateIndex">
+                  <option value="0" selected>16 kHz</option>
+                  <option value="1">24 kHz</option>
+                  <option value="2">32 kHz</option>
+                  <option value="3">48 kHz</option>
+                  <option value="4">96 kHz</option>
+                </select>
+              </div>
+            </div>
+            <div class="button-row">
+              <button id="startSdLoggerBtn" class="primary" type="button" disabled>Start SD Logging</button>
+              <button id="stopSdLoggerBtn" class="danger" type="button" disabled>Stop SD Logging</button>
+            </div>
+            <div class="metric-grid">
+              <div><span class="metric-label">Mode</span><strong id="sdLoggerMode">BLE</strong></div>
+              <div><span class="metric-label">Audio Files</span><strong id="sdLoggerAudioFiles">-</strong></div>
+              <div><span class="metric-label">Last Command</span><strong id="sdLoggerLastCommand">-</strong></div>
+            </div>
+          </div>
+
+          <!-- BLE DATA LOGGER TAB -->
+          <div id="bleLoggerTab" class="logger-tab-content">
+            <div class="panel-head">
+              <h2>BLE DATA LOGGER</h2>
+              <span id="bleLoggerState" class="fine">Idle</span>
+            </div>
+            <div class="sd-logger-grid">
+              <label class="check-row" for="bleLogImu">
+                <input id="bleLogImu" type="checkbox" checked>
+                <span>IMU (TDM 9-axis preview)</span>
+              </label>
+              <label class="check-row" for="bleLogThermal">
+                <input id="bleLogThermal" type="checkbox">
+                <span>Thermal IR (TDM row data)</span>
+              </label>
+              <label class="check-row" for="bleLogAudio">
+                <input id="bleLogAudio" type="checkbox" checked>
+                <span>Audio (mono, ADAU C5/MP1, 16 kHz)</span>
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="startBleLoggerBtn" class="primary" type="button" disabled>Start BLE Recording</button>
+              <button id="stopBleLoggerBtn" class="danger" type="button" disabled>Stop BLE Recording</button>
+              <button id="downloadBleLogBtn" type="button" disabled>⬇ Download CSV</button>
+            </div>
+            <div class="metric-grid">
+              <div><span class="metric-label">Duration</span><strong id="bleLogDuration">0.0s</strong></div>
+              <div><span class="metric-label">Audio Samples</span><strong id="bleLogAudioCount">0</strong></div>
+              <div><span class="metric-label">IMU Samples</span><strong id="bleLogImuCount">0</strong></div>
+              <div><span class="metric-label">Thermal Frames</span><strong id="bleLogThermalCount">0</strong></div>
+              <div><span class="metric-label">Dropped Packets</span><strong id="bleLogDropped" style="color:var(--danger)">0</strong></div>
+            </div>
+          </div>
+        </article>
+
         <!-- LOG & SERVICES PANEL -->
         <article class="glass-panel panel terminal-panel">
           <div class="panel-head">

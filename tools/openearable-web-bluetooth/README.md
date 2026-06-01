@@ -37,7 +37,7 @@ Hard-refresh (`Ctrl+F5`) after pulling firmware or UI updates so the browser loa
    - `100 ms low`: 4800 PCM frames represented as 480 averaged points.
 4. Click `Start Wave`.
 
-The waveform service sends PCM16 preview chunks over BLE. It is useful for checking the ADAU1860/I2S microphone path, but it is not a full continuous audio recorder.
+The waveform service sends the 251-byte TDM preview packet over BLE. The packet carries mono PCM16, one optional thermal row with an explicit row index, and one optional 9-axis IMU preview sample.
 
 The canvas uses AC removal and auto gain. Use the numeric `Peak`, `Mean Abs`, and `Peak-to-Peak` values when judging actual amplitude.
 
@@ -69,9 +69,25 @@ Packet format (per BLE notification, after the 10-byte sensor header):
 temperature_celsius = raw / 50.0
 ```
 
-One frame = 43 chunks (768 pixels). All chunks of a frame share the same timestamp field.
+One SD/storage frame = 48 chunks (768 pixels). All chunks of a frame share the same timestamp field. Live TDM preview uses full 32-pixel rows; the console waits for row 0 and drops any frame whose rows are not contiguous.
 
 Palette options: Iron (default), Jet, Grayscale. Toggle **Auto Range** or set manual Min/Max °C.
+
+## SD card Data logger
+
+Use the **SD card Data logger** panel to switch into SD-only recording mode. The page stops live BLE data notifications and sends only sensor configuration commands.
+
+Files created on the card follow:
+
+```text
+IMU_<timestamp>.csv
+IR_<timestamp>.csv
+Audio_<timestamp>.csv
+Audio_<timestamp>_L.pcm
+Audio_<timestamp>_R.pcm
+```
+
+Audio channel bits are sent in `storageOptions` with `0x10` for left and `0x20` for right, in addition to `0x02` for `DATA_STORAGE`.
 
 ## Hardware Status Panel
 

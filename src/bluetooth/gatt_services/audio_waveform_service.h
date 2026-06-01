@@ -2,6 +2,7 @@
 #define AUDIO_WAVEFORM_SERVICE_H
 
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <zephyr/bluetooth/conn.h>
@@ -27,29 +28,43 @@
 #define BT_UUID_AUDIO_WAVEFORM_DATA \
 	BT_UUID_DECLARE_128(BT_UUID_AUDIO_WAVEFORM_DATA_VAL)
 
-#define AUDIO_WAVEFORM_SAMPLES_PER_PACKET 96
-#define AUDIO_WAVEFORM_SAMPLE_FORMAT_PCM16 1
+#define AUDIO_WAVEFORM_PACKET_SIZE 251U
+#define AUDIO_WAVEFORM_SAMPLE_RATE_HZ 16000U
+#define AUDIO_WAVEFORM_PERIOD_MS 5U
+
+#define AUDIO_WAVEFORM_MIC_PAYLOAD_SIZE 160U
+#define AUDIO_WAVEFORM_MIC_SAMPLES_PER_PACKET 80U
+#define AUDIO_WAVEFORM_THERMAL_PAYLOAD_SIZE 64U
+#define AUDIO_WAVEFORM_THERMAL_PIXELS_PER_ROW 32U
+#define AUDIO_WAVEFORM_IMU_PAYLOAD_SIZE 18U
 
 struct audio_waveform_packet {
-	uint32_t sequence;
-	uint32_t sample_rate_hz;
-	uint16_t frame_count;
-	uint16_t peak_l;
-	uint16_t peak_r;
-	uint16_t mean_abs_l;
-	uint16_t mean_abs_r;
-	uint8_t sample_count;
-	uint8_t sample_format;
-	uint16_t window_id;
-	uint16_t sample_offset;
-	uint16_t total_sample_count;
-	uint16_t decimation;
-	int16_t samples[AUDIO_WAVEFORM_SAMPLES_PER_PACKET];
-	int16_t min_mono;
-	int16_t max_mono;
-	uint16_t peak_to_peak_mono;
+	uint8_t seq;
+	uint8_t timestamp_be[4];
+	uint8_t mic_valid_len;
+	uint8_t mic_payload[AUDIO_WAVEFORM_MIC_PAYLOAD_SIZE];
+	uint8_t thermal_valid_len;
+	uint8_t thermal_row_index;
+	uint8_t thermal_payload[AUDIO_WAVEFORM_THERMAL_PAYLOAD_SIZE];
+	uint8_t imu_valid_len;
+	uint8_t imu_payload[AUDIO_WAVEFORM_IMU_PAYLOAD_SIZE];
 } __packed;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int audio_waveform_service_submit_i2s_block(const int16_t *samples, size_t frame_count);
+void audio_waveform_service_set_mic_enabled(bool enabled);
+void audio_waveform_service_submit_imu_sample(const float accel_mps2[3],
+					      const float gyro_dps[3],
+					      const float mag_ut[3]);
+void audio_waveform_service_submit_thermal_row(const int16_t *row_pixels,
+					       size_t pixel_count,
+					       uint8_t row_index);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* AUDIO_WAVEFORM_SERVICE_H */

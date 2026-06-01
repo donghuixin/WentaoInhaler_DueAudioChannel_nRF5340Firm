@@ -143,7 +143,7 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
             .availableOptions = DATA_STREAMING | DATA_STORAGE | FREQUENCIES_DEFINED,
             .frequencyOptions = {
                 .frequencyCount = sizeof(IMU::sample_rates.reg_vals),
-                .defaultFrequencyIndex = 1,
+                .defaultFrequencyIndex = 2,
                 .maxBleFrequencyIndex = 2,
                 .frequencies = IMU::sample_rates.sample_rates,
             },
@@ -155,11 +155,11 @@ SensorScheme defaultSensors[SENSOR_COUNT] = {
         .groupCount = MICRO_GROUP_COUNT,
         .groups = microGroups,
         .configOptions = {
-            .availableOptions = DATA_STORAGE | FREQUENCIES_DEFINED, // no streaming
+            .availableOptions = DATA_STREAMING | DATA_STORAGE | FREQUENCIES_DEFINED,
             .frequencyOptions = {
                 .frequencyCount = sizeof(Microphone::sample_rates.reg_vals),
-                .defaultFrequencyIndex = 1,
-                .maxBleFrequencyIndex = 1,
+                .defaultFrequencyIndex = 0,
+                .maxBleFrequencyIndex = 0,
                 .frequencies = Microphone::sample_rates.sample_rates,
             },
         },

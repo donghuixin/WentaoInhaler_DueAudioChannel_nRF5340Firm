@@ -4,8 +4,10 @@
  * Mirrors the structure of Temp / IMU / Baro so the SensorManager dispatcher
  * can drive it the same way. The wrapper polls a Zephyr timer; on each tick
  * it checks whether the MLX90642 has finished a new frame and, if so, reads
- * the full 768-pixel frame and pushes it onto `sensor_queue` as a sequence
- * of `sensor_msg` packets that the BLE / SD pipelines already understand.
+ * the full 768-pixel frame and feeds 32-pixel rows into the fixed 251-byte
+ * BLE TDM packet cache. Each TDM row carries its explicit row index so the
+ * web console can reject any frame that did not start at row 0. SD logging still uses the legacy chunked sensor_msg
+ * representation below.
  *
  * Each thermal BLE packet payload is:
  *   [chunk_idx : u8][count : u8][int16 raw_pixel x count]

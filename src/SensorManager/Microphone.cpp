@@ -2,6 +2,7 @@
 
 #include "audio_datapath.h"
 #include "streamctrl.h"
+#include "../bluetooth/gatt_services/audio_waveform_service.h"
 
 #include "SensorManager.h"
 
@@ -33,12 +34,12 @@ extern struct data_fifo fifo_rx;
 
 Microphone Microphone::sensor;
 
-const SampleRateSetting<1> Microphone::sample_rates = {
-    { 0 },
+const SampleRateSetting<5> Microphone::sample_rates = {
+    { 0, 1, 2, 3, 4 },
 
-	{ 48000 },
+	{ 16000, 24000, 32000, 48000, 96000 },
 
-	{ 48000.0 }
+	{ 16000.0, 24000.0, 32000.0, 48000.0, 96000.0 }
 };
 
 bool Microphone::init(struct k_msgq * queue) {
@@ -57,11 +58,10 @@ bool Microphone::init(struct k_msgq * queue) {
 void Microphone::start(int sample_rate_idx) {
 	ARG_UNUSED(sample_rate_idx);
 
-	int ret;
-
 	if (!_active) return;
 
-	record_to_sd(true);
+	record_to_sd(sensor._sd_logging);
+	audio_waveform_service_set_mic_enabled(sensor._ble_stream);
 
 	audio_datapath_aquire(&fifo_rx);
 
@@ -75,6 +75,7 @@ void Microphone::stop() {
 	if (!_running) return;
 
 	record_to_sd(false);
+	audio_waveform_service_set_mic_enabled(false);
 
 	audio_datapath_release();
 

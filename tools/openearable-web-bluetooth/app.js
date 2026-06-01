@@ -83,15 +83,32 @@ const SENSOR_NAMES = new Map([
 ]);
 
 const IMU_SENSOR_ID = 0;
-const IMU_SAMPLE_RATE_INDEX = 1;
+const IMU_SAMPLE_RATE_INDEX = 2;
 const MICROPHONE_SENSOR_ID = 2;
 const MICROPHONE_SAMPLE_RATE_INDEX = 0;
 const STORAGE_STREAMING = 0x01;
 const STORAGE_DATA_STORAGE = 0x02;
+const STORAGE_AUDIO_LEFT = 0x10;
+const STORAGE_AUDIO_RIGHT = 0x20;
 const AUDIO_WAVE_CONTROL_ENABLE = 0x01;
 const AUDIO_WAVE_CONTROL_RESET = 0x02;
 const AUDIO_WAVE_WINDOW_SHIFT = 2;
 const AUDIO_SAMPLE_FORMAT_PCM16 = 1;
+const TDM_PACKET_SIZE = 251;
+const TDM_SAMPLE_RATE_HZ = 16000;
+const TDM_PACKET_PERIOD_MS = 5;
+const TDM_MIC_OFFSET = 6;
+const TDM_MIC_BYTES = 160;
+const TDM_THERMAL_LEN_OFFSET = 166;
+const TDM_THERMAL_ROW_OFFSET = 167;
+const TDM_THERMAL_OFFSET = 168;
+const TDM_THERMAL_BYTES = 64;
+const TDM_IMU_LEN_OFFSET = 232;
+const TDM_IMU_OFFSET = 233;
+const TDM_IMU_BYTES = 18;
+const TDM_ACCEL_SCALE_MPS2_PER_LSB = 9.80665 / 1000;
+const TDM_GYRO_SCALE_DPS_PER_LSB = 0.1;
+const TDM_MAG_SCALE_UT_PER_LSB = 0.1;
 
 // Thermal IR (MLX90642) constants. Must match the firmware in
 // src/SensorManager/Thermal.{h,cpp} and the chunk header layout.
@@ -192,6 +209,21 @@ const els = {
   thermalDropped: document.querySelector('#thermalDropped'),
   thermalDebugInfo: document.querySelector('#thermalDebugInfo'),
   thermalLastTime: document.querySelector('#thermalLastTime'),
+  sdLoggerState: document.querySelector('#sdLoggerState'),
+  sdLoggerEnabled: document.querySelector('#sdLoggerEnabled'),
+  sdLogImu: document.querySelector('#sdLogImu'),
+  sdImuRateIndex: document.querySelector('#sdImuRateIndex'),
+  sdLogThermal: document.querySelector('#sdLogThermal'),
+  sdThermalRateIndex: document.querySelector('#sdThermalRateIndex'),
+  sdLogAudio: document.querySelector('#sdLogAudio'),
+  sdAudioLeft: document.querySelector('#sdAudioLeft'),
+  sdAudioRight: document.querySelector('#sdAudioRight'),
+  sdAudioRateIndex: document.querySelector('#sdAudioRateIndex'),
+  startSdLoggerBtn: document.querySelector('#startSdLoggerBtn'),
+  stopSdLoggerBtn: document.querySelector('#stopSdLoggerBtn'),
+  sdLoggerMode: document.querySelector('#sdLoggerMode'),
+  sdLoggerAudioFiles: document.querySelector('#sdLoggerAudioFiles'),
+  sdLoggerLastCommand: document.querySelector('#sdLoggerLastCommand'),
   readHwStatusBtn: document.querySelector('#readHwStatusBtn'),
   hwStatusTime: document.querySelector('#hwStatusTime'),
   hwStatusSummary: document.querySelector('#hwStatusSummary'),
@@ -199,6 +231,22 @@ const els = {
   i2cBusTableBody: document.querySelector('#i2cBusTableBody'),
   hwBootLog: document.querySelector('#hwBootLog'),
   hwRecentLog: document.querySelector('#hwRecentLog'),
+  tabSdLogger: document.querySelector('#tabSdLogger'),
+  tabBleLogger: document.querySelector('#tabBleLogger'),
+  sdLoggerTab: document.querySelector('#sdLoggerTab'),
+  bleLoggerTab: document.querySelector('#bleLoggerTab'),
+  bleLoggerState: document.querySelector('#bleLoggerState'),
+  bleLogImu: document.querySelector('#bleLogImu'),
+  bleLogThermal: document.querySelector('#bleLogThermal'),
+  bleLogAudio: document.querySelector('#bleLogAudio'),
+  startBleLoggerBtn: document.querySelector('#startBleLoggerBtn'),
+  stopBleLoggerBtn: document.querySelector('#stopBleLoggerBtn'),
+  downloadBleLogBtn: document.querySelector('#downloadBleLogBtn'),
+  bleLogDuration: document.querySelector('#bleLogDuration'),
+  bleLogAudioCount: document.querySelector('#bleLogAudioCount'),
+  bleLogImuCount: document.querySelector('#bleLogImuCount'),
+  bleLogThermalCount: document.querySelector('#bleLogThermalCount'),
+  bleLogDropped: document.querySelector('#bleLogDropped'),
   hwLogDropped: document.querySelector('#hwLogDropped')
 };
 
@@ -209,6 +257,7 @@ let packetCount = 0;
 let sensorConfigChar = null;
 let sensorDataChar = null;
 let sensorStatusChar = null;
+let sensorRecordingNameChar = null;
 let audioWaveformControlChar = null;
 let audioWaveformDataChar = null;
 let sensorDataNotifying = false;
@@ -222,12 +271,112 @@ let lastAudioPeak = 0;
 let lastAudioDurationMs = 0;
 let lastAudioPointRate = 0;
 let audioWindowAssembly = null;
+let lastTdmSeq = null;
+let tdmDroppedPackets = 0;
+let thermalTdmFrameActive = false;
+let thermalTdmExpectedRow = 0;
 
 let isRecordingAudio = false;
 let recordedAudioBuffer = [];
 let recordedAudioPointRate = 0;
+let recordedAudioStartMs = null;
 let playbackAudioContext = null;
 let currentAudioSource = null;
+
+// Web Bluetooth allows one GATT operation at a time per connection.
+let gattQueue = Promise.resolve();
+let bleLoggerOperation = null;
+
+function enqueueGatt(fn) {
+  const run = async () => {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        const busy = /already in progress|gatt operation/i.test(error.message);
+        if (busy && attempt < 5) {
+          await new Promise((resolve) => setTimeout(resolve, 60 * attempt));
+          continue;
+        }
+        throw error;
+      }
+    }
+    return undefined;
+  };
+  const next = gattQueue.then(run, run);
+  gattQueue = next.catch(() => {});
+  return next;
+}
+
+async function gattWriteValue(characteristic, value) {
+  if (!characteristic) {
+    throw new Error('Characteristic unavailable');
+  }
+  await enqueueGatt(() => characteristic.writeValue(value));
+}
+
+async function gattReadValue(characteristic) {
+  if (!characteristic) {
+    throw new Error('Characteristic unavailable');
+  }
+  return enqueueGatt(() => characteristic.readValue());
+}
+
+async function gattStartNotifications(characteristic, handler) {
+  await enqueueGatt(async () => {
+    await characteristic.startNotifications();
+    characteristic.addEventListener('characteristicvaluechanged', handler);
+  });
+}
+
+async function gattStopNotifications(characteristic, handler) {
+  await enqueueGatt(async () => {
+    await characteristic.stopNotifications();
+    characteristic.removeEventListener('characteristicvaluechanged', handler);
+  });
+}
+
+function ensureRecordedAudioCapacity(sampleIndex) {
+  while (recordedAudioBuffer.length <= sampleIndex) {
+    recordedAudioBuffer.push(0);
+  }
+}
+
+function appendRecordedTdmSamples(timestampMs, micSamples, droppedNow) {
+  if (recordedAudioStartMs === null) {
+    recordedAudioStartMs = timestampMs;
+    recordedAudioPointRate = TDM_SAMPLE_RATE_HZ;
+  }
+
+  const samplesPerPacket = TDM_MIC_BYTES / 2;
+  if (droppedNow > 0) {
+    const silenceStart = Math.max(
+      0,
+      Math.round(((timestampMs - recordedAudioStartMs) - droppedNow * TDM_PACKET_PERIOD_MS) * TDM_SAMPLE_RATE_HZ / 1000)
+    );
+    ensureRecordedAudioCapacity(silenceStart + droppedNow * samplesPerPacket - 1);
+    for (let s = 0; s < droppedNow * samplesPerPacket; s++) {
+      recordedAudioBuffer[silenceStart + s] = 0;
+    }
+  }
+
+  const sampleOffset = Math.max(
+    0,
+    Math.round((timestampMs - recordedAudioStartMs) * TDM_SAMPLE_RATE_HZ / 1000)
+  );
+  ensureRecordedAudioCapacity(sampleOffset + micSamples.length - 1);
+  for (let i = 0; i < micSamples.length; i++) {
+    recordedAudioBuffer[sampleOffset + i] = micSamples[i];
+  }
+}
+
+// BLE Data Logger state
+let isBleLogging = false;
+let bleLogStartTime = 0;
+let bleLogAudioBuffer = [];   // { timestamp_ms, samples: Int16Array }
+let bleLogImuBuffer = [];     // { timestamp_ms, ax, ay, az, gx, gy, gz, mx, my, mz }
+let bleLogThermalBuffer = []; // { timestamp_ms, row, pixels: Int16Array }
+let bleLogDroppedCount = 0;
 
 // Thermal IR streaming state. The frame buffer holds raw int16 values from
 // the MLX90642 (raw / 50 = degrees Celsius); we render the most recent
@@ -336,6 +485,8 @@ function resetAudioWaveformValues() {
   lastAudioDurationMs = 0;
   lastAudioPointRate = 0;
   audioWindowAssembly = null;
+  lastTdmSeq = null;
+  tdmDroppedPackets = 0;
   els.audioWaveState.textContent = 'Preview off';
   drawAudioWaveform([]);
 }
@@ -491,7 +642,7 @@ async function readHardwareStatus() {
   try {
     const service = await server.getPrimaryService(UUIDS.deviceInfoService);
     const characteristic = await service.getCharacteristic(UUIDS.hardwareStatus);
-    const value = await characteristic.readValue();
+    const value = await gattReadValue(characteristic);
     const text = bytesToText(value);
     if (!text) {
       resetHardwareStatusUi('状态为空');
@@ -531,6 +682,21 @@ function setConnectedUi(isConnected) {
   if (els.readHwStatusBtn) {
     els.readHwStatusBtn.disabled = !isConnected;
   }
+  if (els.startSdLoggerBtn) {
+    els.startSdLoggerBtn.disabled = !isConnected || !sensorConfigChar;
+  }
+  if (els.stopSdLoggerBtn) {
+    els.stopSdLoggerBtn.disabled = !isConnected || !sensorConfigChar;
+  }
+  if (els.startBleLoggerBtn) {
+    els.startBleLoggerBtn.disabled = !isConnected || !sensorConfigChar || !audioWaveformControlChar;
+  }
+  if (els.stopBleLoggerBtn) {
+    els.stopBleLoggerBtn.disabled = !isConnected || !isBleLogging;
+  }
+  if (els.downloadBleLogBtn) {
+    els.downloadBleLogBtn.disabled = bleLogAudioBuffer.length === 0 && bleLogImuBuffer.length === 0 && bleLogThermalBuffer.length === 0;
+  }
   els.gattState.textContent = isConnected ? 'GATT connected' : 'GATT disconnected';
 }
 
@@ -540,6 +706,7 @@ function resetConnectionState() {
   sensorConfigChar = null;
   sensorDataChar = null;
   sensorStatusChar = null;
+  sensorRecordingNameChar = null;
   audioWaveformControlChar = null;
   audioWaveformDataChar = null;
   sensorDataNotifying = false;
@@ -554,6 +721,17 @@ function resetConnectionState() {
 
   isRecordingAudio = false;
   recordedAudioBuffer = [];
+  recordedAudioStartMs = null;
+  isBleLogging = false;
+  bleLoggerOperation = null;
+  bleLogAudioBuffer = [];
+  bleLogImuBuffer = [];
+  bleLogThermalBuffer = [];
+  bleLogDroppedCount = 0;
+  if (bleLogTimer) {
+    clearInterval(bleLogTimer);
+    bleLogTimer = null;
+  }
   els.recordAudioBtn.textContent = '⏺ Record';
   els.recordAudioBtn.disabled = true;
   els.playAudioBtn.disabled = true;
@@ -706,6 +884,8 @@ function cacheCharacteristic(characteristic) {
     sensorDataChar = characteristic;
   } else if (uuid === UUIDS.sensorConfigStatus) {
     sensorStatusChar = characteristic;
+  } else if (uuid === UUIDS.sensorRecordingName) {
+    sensorRecordingNameChar = characteristic;
   } else if (uuid === UUIDS.audioWaveformControl) {
     audioWaveformControlChar = characteristic;
   } else if (uuid === UUIDS.audioWaveformData) {
@@ -777,7 +957,7 @@ function characteristicProperties(characteristic) {
 
 async function readCharacteristic(characteristic, row) {
   try {
-    const value = await characteristic.readValue();
+    const value = await gattReadValue(characteristic);
     const preview = valuePreview(value);
     row.querySelector('.value-line').textContent = preview;
     log(`Read ${KNOWN_CHARS.get(normalizeUuid(characteristic.uuid)) || characteristic.uuid}: ${preview}`);
@@ -809,13 +989,11 @@ async function toggleGenericNotify(characteristic, button, row) {
 
   try {
     if (enabled) {
-      await characteristic.stopNotifications();
-      characteristic.removeEventListener('characteristicvaluechanged', handler);
+      await gattStopNotifications(characteristic, handler);
       button.dataset.enabled = 'false';
       button.textContent = 'Notify';
     } else {
-      await characteristic.startNotifications();
-      characteristic.addEventListener('characteristicvaluechanged', handler);
+      await gattStartNotifications(characteristic, handler);
       button.dataset.enabled = 'true';
       button.textContent = 'Stop';
     }
@@ -841,7 +1019,7 @@ async function tryRead(serviceUuid, characteristicUuid, onValue) {
   try {
     const service = await server.getPrimaryService(serviceUuid);
     const characteristic = await service.getCharacteristic(characteristicUuid);
-    const value = await characteristic.readValue();
+    const value = await gattReadValue(characteristic);
     onValue(value);
   } catch {
     // Optional service or characteristic is absent.
@@ -857,7 +1035,7 @@ async function readBatteryLevel() {
   try {
     const service = await server.getPrimaryService('battery_service');
     const characteristic = await service.getCharacteristic('battery_level');
-    const value = await characteristic.readValue();
+    const value = await gattReadValue(characteristic);
     const level = value.getUint8(0);
     setFact('factBattery', `${level}%`);
     log(`Battery level: ${level}%`);
@@ -891,7 +1069,7 @@ async function writeSensorConfigPayload(sensorId, sampleRateIndex, storageOption
   const payload = new Uint8Array([sensorId, sampleRateIndex, storageOptions]);
 
   try {
-    await sensorConfigChar.writeValue(payload);
+    await gattWriteValue(sensorConfigChar, payload);
     const sensorName = SENSOR_NAMES.get(sensorId) || `Sensor ${sensorId}`;
     const action = storageOptions === 0 ? 'Disabled' : 'Configured';
     log(`${action} ${sensorName}`, { sensorId, sampleRateIndex, storageOptions, hex: bytesToHex(payload) });
@@ -922,15 +1100,13 @@ async function setSensorDataNotify(enable) {
   }
 
   if (enable && !sensorDataNotifying) {
-    await sensorDataChar.startNotifications();
-    sensorDataChar.addEventListener('characteristicvaluechanged', handleSensorData);
+    await gattStartNotifications(sensorDataChar, handleSensorData);
     sensorDataNotifying = true;
     els.subscribeSensorBtn.textContent = 'Stop Data';
     els.notifyState.textContent = 'Data notifications on';
     log('Sensor data notifications enabled');
   } else if (!enable && sensorDataNotifying) {
-    await sensorDataChar.stopNotifications();
-    sensorDataChar.removeEventListener('characteristicvaluechanged', handleSensorData);
+    await gattStopNotifications(sensorDataChar, handleSensorData);
     sensorDataNotifying = false;
     els.subscribeSensorBtn.textContent = 'Subscribe Data';
     els.notifyState.textContent = sensorStatusNotifying ? 'Status notifications on' : 'Notifications off';
@@ -944,14 +1120,12 @@ async function startImuStream() {
   els.sensorId.value = String(IMU_SENSOR_ID);
   els.sampleRateIndex.value = String(IMU_SAMPLE_RATE_INDEX);
 
-  const notifyReady = await setSensorDataNotify(true);
-  if (!notifyReady) {
-    return;
-  }
+  await ensureTdmNotifications({ reset: lastTdmSeq == null });
+  await setSensorDataNotify(true);
 
   const written = await writeSensorConfigPayload(IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, STORAGE_STREAMING);
   if (written) {
-    log('IMU stream requested. Move the board and watch Accel/Gyro values.');
+    log('IMU stream requested. TDM packets will carry accel, gyro, and magnetometer samples in the 18-byte slot.');
   }
 }
 
@@ -973,13 +1147,27 @@ function audioWaveformControlValue({ reset = true } = {}) {
     (mode << AUDIO_WAVE_WINDOW_SHIFT);
 }
 
+async function ensureTdmNotifications({ reset = false } = {}) {
+  if (!audioWaveformControlChar || !audioWaveformDataChar) {
+    return false;
+  }
+
+  if (!audioWaveformNotifying) {
+    await gattStartNotifications(audioWaveformDataChar, handleAudioWaveformData);
+    audioWaveformNotifying = true;
+  }
+
+  await gattWriteValue(audioWaveformControlChar, new Uint8Array([audioWaveformControlValue({ reset })]));
+  return true;
+}
+
 async function updateAudioWaveformWindow() {
   if (!audioWaveformControlChar || !audioWaveformNotifying) {
     return;
   }
 
   audioWindowAssembly = null;
-  await audioWaveformControlChar.writeValue(new Uint8Array([audioWaveformControlValue({ reset: true })]));
+  await gattWriteValue(audioWaveformControlChar, new Uint8Array([audioWaveformControlValue({ reset: true })]));
   log(`Audio waveform window changed to ${els.audioWindowMode.value}`);
 }
 
@@ -990,20 +1178,14 @@ async function startAudioWaveform() {
   }
 
   try {
-    if (!audioWaveformNotifying) {
-      await audioWaveformDataChar.startNotifications();
-      audioWaveformDataChar.addEventListener('characteristicvaluechanged', handleAudioWaveformData);
-      audioWaveformNotifying = true;
-    }
-
     audioWindowAssembly = null;
-    await audioWaveformControlChar.writeValue(new Uint8Array([audioWaveformControlValue({ reset: true })]));
-    await writeSensorConfigPayload(MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, STORAGE_DATA_STORAGE);
+    await ensureTdmNotifications({ reset: true });
+    await writeSensorConfigPayload(MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, STORAGE_STREAMING);
 
-    els.audioWaveState.textContent = 'Preview on';
+    els.audioWaveState.textContent = 'TDM stream on';
     els.startAudioWaveBtn.disabled = true;
     els.stopAudioWaveBtn.disabled = false;
-    log(`Audio waveform preview requested, window=${els.audioWindowMode.value}`);
+    log(`16 kHz TDM audio stream requested, packet=${TDM_PACKET_SIZE} B`);
   } catch (error) {
     log(`Audio waveform start failed: ${error.message}`);
   }
@@ -1012,7 +1194,7 @@ async function startAudioWaveform() {
 async function stopAudioWaveform() {
   try {
     if (audioWaveformControlChar) {
-      await audioWaveformControlChar.writeValue(new Uint8Array([0x00]));
+      await gattWriteValue(audioWaveformControlChar, new Uint8Array([0x00]));
     }
 
     if (sensorConfigChar) {
@@ -1020,8 +1202,7 @@ async function stopAudioWaveform() {
     }
 
     if (audioWaveformDataChar && audioWaveformNotifying) {
-      await audioWaveformDataChar.stopNotifications();
-      audioWaveformDataChar.removeEventListener('characteristicvaluechanged', handleAudioWaveformData);
+      await gattStopNotifications(audioWaveformDataChar, handleAudioWaveformData);
       audioWaveformNotifying = false;
     }
 
@@ -1041,7 +1222,7 @@ async function readAudioWaveform() {
   }
 
   try {
-    const value = await audioWaveformDataChar.readValue();
+    const value = await gattReadValue(audioWaveformDataChar);
     const preview = decodeAudioWaveformPacket(value);
     log(`Audio waveform read: ${preview}`);
   } catch (error) {
@@ -1065,14 +1246,12 @@ async function toggleSensorStatusNotify() {
 
   try {
     if (sensorStatusNotifying) {
-      await sensorStatusChar.stopNotifications();
-      sensorStatusChar.removeEventListener('characteristicvaluechanged', handleSensorStatus);
+      await gattStopNotifications(sensorStatusChar, handleSensorStatus);
       sensorStatusNotifying = false;
       els.subscribeStatusBtn.textContent = 'Subscribe Status';
       els.notifyState.textContent = sensorDataNotifying ? 'Data notifications on' : 'Notifications off';
     } else {
-      await sensorStatusChar.startNotifications();
-      sensorStatusChar.addEventListener('characteristicvaluechanged', handleSensorStatus);
+      await gattStartNotifications(sensorStatusChar, handleSensorStatus);
       sensorStatusNotifying = true;
       els.subscribeStatusBtn.textContent = 'Stop Status';
       els.notifyState.textContent = 'Status notifications on';
@@ -1371,6 +1550,8 @@ function resetThermalValues() {
   thermalLastFpsSampleAt = 0;
   thermalFramesAtLastSample = 0;
   thermalNotifyEnabled = false;
+  thermalTdmFrameActive = false;
+  thermalTdmExpectedRow = 0;
   if (els.thermalFrames) els.thermalFrames.textContent = '0';
   if (els.thermalFps) els.thermalFps.textContent = '-';
   if (els.thermalChunks) els.thermalChunks.textContent = `0/${thermalTotalChunks}`;
@@ -1397,10 +1578,8 @@ async function startThermalStream() {
   els.sensorId.value = String(THERMAL_SENSOR_ID);
   els.sampleRateIndex.value = String(sampleRateIndex);
 
-  const notifyReady = await setSensorDataNotify(true);
-  if (!notifyReady) {
-    return;
-  }
+  await ensureTdmNotifications({ reset: lastTdmSeq == null });
+  await setSensorDataNotify(true);
   thermalNotifyEnabled = true;
 
   resetThermalAssembly();
@@ -1409,7 +1588,7 @@ async function startThermalStream() {
   const written = await writeSensorConfigPayload(THERMAL_SENSOR_ID, sampleRateIndex, STORAGE_STREAMING);
   if (written) {
     els.thermalState.textContent = `Streaming @ idx ${sampleRateIndex}`;
-    log('Thermal IR stream requested. Watch the heatmap below.');
+    log('Thermal IR stream requested. TDM packets will carry one 32-pixel row per valid slot.');
   }
 }
 
@@ -1419,6 +1598,305 @@ async function stopThermalStream() {
   await writeSensorConfigPayload(THERMAL_SENSOR_ID, THERMAL_SAMPLE_RATE_INDEX, 0x00);
   els.thermalState.textContent = 'Stream off';
   thermalNotifyEnabled = false;
+}
+
+async function writeRecordingName(prefix) {
+  if (!sensorRecordingNameChar) {
+    return;
+  }
+
+  const safePrefix = prefix.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 24);
+  await gattWriteValue(sensorRecordingNameChar, new TextEncoder().encode(safePrefix));
+}
+
+async function setBleControlOnlyMode() {
+  if (sensorDataChar && sensorDataNotifying) {
+    await setSensorDataNotify(false);
+  }
+
+  if (audioWaveformControlChar) {
+    await gattWriteValue(audioWaveformControlChar, new Uint8Array([0x00]));
+  }
+
+  if (audioWaveformDataChar && audioWaveformNotifying) {
+    await gattStopNotifications(audioWaveformDataChar, handleAudioWaveformData);
+    audioWaveformNotifying = false;
+  }
+
+  audioWindowAssembly = null;
+}
+
+function selectedSdAudioStorageOptions() {
+  let options = STORAGE_DATA_STORAGE;
+  if (els.sdAudioLeft?.checked) options |= STORAGE_AUDIO_LEFT;
+  if (els.sdAudioRight?.checked) options |= STORAGE_AUDIO_RIGHT;
+  if ((options & (STORAGE_AUDIO_LEFT | STORAGE_AUDIO_RIGHT)) === 0) {
+    options |= STORAGE_AUDIO_LEFT | STORAGE_AUDIO_RIGHT;
+  }
+  return options;
+}
+
+async function startSdDataLogger() {
+  if (!sensorConfigChar) {
+    log('Sensor config characteristic unavailable');
+    return;
+  }
+
+  if (!els.sdLoggerEnabled?.checked) {
+    els.sdLoggerState.textContent = 'SD card not selected';
+    return;
+  }
+
+  const configs = [];
+  if (els.sdLogImu?.checked) {
+    const imuRate = Number.parseInt(els.sdImuRateIndex.value, 10) || IMU_SAMPLE_RATE_INDEX;
+    configs.push([IMU_SENSOR_ID, imuRate, STORAGE_DATA_STORAGE]);
+  }
+  if (els.sdLogThermal?.checked) {
+    const thermalRate = Number.parseInt(els.sdThermalRateIndex.value, 10) || THERMAL_SAMPLE_RATE_INDEX;
+    configs.push([THERMAL_SENSOR_ID, thermalRate, STORAGE_DATA_STORAGE]);
+  }
+  if (els.sdLogAudio?.checked) {
+    const audioRate = Number.parseInt(els.sdAudioRateIndex.value, 10) || MICROPHONE_SAMPLE_RATE_INDEX;
+    configs.push([MICROPHONE_SENSOR_ID, audioRate, selectedSdAudioStorageOptions()]);
+  }
+
+  if (configs.length === 0) {
+    els.sdLoggerState.textContent = 'No sensors selected';
+    return;
+  }
+
+  if (els.startSdLoggerBtn) els.startSdLoggerBtn.disabled = true;
+
+  try {
+    await setBleControlOnlyMode();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    await writeRecordingName(`SD_${Date.now()}_`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    let successCount = 0;
+    for (const [sensorId, rateIndex, storageOptions] of configs) {
+      const ok = await writeSensorConfigPayload(sensorId, rateIndex, storageOptions);
+      if (ok) successCount++;
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+
+    if (successCount === 0) {
+      els.sdLoggerState.textContent = 'Start failed';
+      log('SD card data logger failed: no sensor config accepted');
+      return;
+    }
+
+    const audioFiles = els.sdLogAudio?.checked
+      ? `${els.sdAudioLeft?.checked ? '_L' : ''}${els.sdAudioRight?.checked ? '_R' : ''}` || '_L_R'
+      : '-';
+    els.sdLoggerState.textContent = 'Recording to SD';
+    els.sdLoggerMode.textContent = 'SD';
+    els.sdLoggerAudioFiles.textContent = audioFiles;
+    els.sdLoggerLastCommand.textContent = `${successCount}/${configs.length} sensor config(s)`;
+    if (els.stopSdLoggerBtn) els.stopSdLoggerBtn.disabled = false;
+    log('SD card data logger started', { configs, successCount });
+  } catch (error) {
+    els.sdLoggerState.textContent = 'Start failed';
+    log(`SD logger start failed: ${error.message}`);
+  } finally {
+    if (els.startSdLoggerBtn) els.startSdLoggerBtn.disabled = !server?.connected;
+  }
+}
+
+async function stopSdDataLogger() {
+  if (!sensorConfigChar) {
+    log('Sensor config characteristic unavailable');
+    return;
+  }
+
+  if (els.stopSdLoggerBtn) els.stopSdLoggerBtn.disabled = true;
+
+  const stopConfigs = [
+    [IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, 0x00],
+    [THERMAL_SENSOR_ID, THERMAL_SAMPLE_RATE_INDEX, 0x00],
+    [MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, 0x00]
+  ];
+
+  try {
+    for (const [sensorId, rateIndex, storageOptions] of stopConfigs) {
+      await writeSensorConfigPayload(sensorId, rateIndex, storageOptions);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+
+    els.sdLoggerState.textContent = 'Idle';
+    els.sdLoggerMode.textContent = 'BLE';
+    els.sdLoggerAudioFiles.textContent = '-';
+    els.sdLoggerLastCommand.textContent = 'Stop';
+    log('SD card data logger stopped');
+  } catch (error) {
+    els.sdLoggerState.textContent = 'Stop failed';
+    log(`SD logger stop failed: ${error.message}`);
+  } finally {
+    if (els.startSdLoggerBtn) els.startSdLoggerBtn.disabled = !server?.connected;
+  }
+}
+
+let bleLogTimer = null;
+
+async function waitForBleLoggerOperation() {
+  while (bleLoggerOperation !== null) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function startBleDataLogger() {
+  if (!sensorConfigChar) {
+    log('Sensor config characteristic unavailable');
+    return;
+  }
+
+  if (bleLoggerOperation) {
+    log('BLE logger busy, please wait');
+    return;
+  }
+
+  bleLoggerOperation = 'starting';
+  if (els.startBleLoggerBtn) els.startBleLoggerBtn.disabled = true;
+  if (els.stopBleLoggerBtn) els.stopBleLoggerBtn.disabled = true;
+  if (els.downloadBleLogBtn) els.downloadBleLogBtn.disabled = true;
+
+  bleLogAudioBuffer = [];
+  bleLogImuBuffer = [];
+  bleLogThermalBuffer = [];
+  bleLogDroppedCount = 0;
+  bleLogStartTime = Date.now();
+
+  const configs = [];
+  if (els.bleLogImu?.checked) {
+    configs.push([IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, STORAGE_STREAMING]);
+  }
+  if (els.bleLogThermal?.checked) {
+    configs.push([THERMAL_SENSOR_ID, THERMAL_SAMPLE_RATE_INDEX, STORAGE_STREAMING]);
+  }
+  if (els.bleLogAudio?.checked) {
+    configs.push([MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, STORAGE_STREAMING]);
+  }
+
+  if (configs.length === 0) {
+    els.bleLoggerState.textContent = 'No sensors selected';
+    bleLoggerOperation = null;
+    if (els.startBleLoggerBtn) els.startBleLoggerBtn.disabled = !server?.connected;
+    return;
+  }
+
+  try {
+    const needTdm = configs.length > 0;
+    if (needTdm && !audioWaveformNotifying) {
+      audioWindowAssembly = null;
+      await ensureTdmNotifications({ reset: true });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    let successCount = 0;
+    for (const [sensorId, rateIndex, storageOptions] of configs) {
+      const ok = await writeSensorConfigPayload(sensorId, rateIndex, storageOptions);
+      if (ok) successCount++;
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+
+    if (successCount === 0) {
+      els.bleLoggerState.textContent = 'Start failed';
+      log('BLE data logger failed: no sensor config accepted');
+      return;
+    }
+
+    isBleLogging = true;
+    if (els.bleLoggerState) els.bleLoggerState.textContent = 'Recording to Memory';
+    if (els.bleLogDuration) els.bleLogDuration.textContent = '0.0s';
+    if (els.bleLogDropped) els.bleLogDropped.textContent = '0';
+    if (els.stopBleLoggerBtn) els.stopBleLoggerBtn.disabled = false;
+
+    if (bleLogTimer) clearInterval(bleLogTimer);
+    bleLogTimer = setInterval(() => {
+      if (els.bleLogDuration && isBleLogging) {
+        els.bleLogDuration.textContent = `${((Date.now() - bleLogStartTime) / 1000).toFixed(1)}s`;
+      }
+    }, 100);
+
+    log('BLE data logger started', { successCount, total: configs.length });
+  } catch (err) {
+    isBleLogging = false;
+    els.bleLoggerState.textContent = 'Start failed';
+    log(`BLE data logger error: ${err.message}`);
+  } finally {
+    bleLoggerOperation = null;
+    if (els.startBleLoggerBtn) els.startBleLoggerBtn.disabled = !server?.connected || isBleLogging;
+  }
+}
+
+async function stopBleDataLogger() {
+  await waitForBleLoggerOperation();
+  bleLoggerOperation = 'stopping';
+  if (els.stopBleLoggerBtn) els.stopBleLoggerBtn.disabled = true;
+
+  const stopConfigs = [
+    [IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, 0x00],
+    [THERMAL_SENSOR_ID, THERMAL_SAMPLE_RATE_INDEX, 0x00],
+    [MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, 0x00]
+  ];
+
+  try {
+    for (const [sensorId, rateIndex, storageOptions] of stopConfigs) {
+      await writeSensorConfigPayload(sensorId, rateIndex, storageOptions);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+
+    if (audioWaveformNotifying) {
+      await stopAudioWaveform();
+    }
+
+    isBleLogging = false;
+    if (bleLogTimer) {
+      clearInterval(bleLogTimer);
+      bleLogTimer = null;
+    }
+
+    const hasData = bleLogAudioBuffer.length > 0 || bleLogImuBuffer.length > 0 || bleLogThermalBuffer.length > 0;
+    if (els.bleLoggerState) els.bleLoggerState.textContent = 'Idle';
+    if (els.downloadBleLogBtn) els.downloadBleLogBtn.disabled = !hasData;
+    log('BLE data logger stopped');
+  } catch (error) {
+    log(`BLE logger stop failed: ${error.message}`);
+  } finally {
+    bleLoggerOperation = null;
+    if (els.startBleLoggerBtn) els.startBleLoggerBtn.disabled = !server?.connected;
+    if (els.stopBleLoggerBtn) els.stopBleLoggerBtn.disabled = isBleLogging;
+  }
+}
+
+function downloadBleLogCSV() {
+  if (bleLogAudioBuffer.length === 0 && bleLogImuBuffer.length === 0 && bleLogThermalBuffer.length === 0) {
+    return;
+  }
+  
+  let csvContent = "timestamp_ms,type,data...\n";
+  
+  for (const item of bleLogImuBuffer) {
+    csvContent += `${item.timestamp_ms},IMU,${item.ax},${item.ay},${item.az},${item.gx},${item.gy},${item.gz},${item.mx},${item.my},${item.mz}\n`;
+  }
+  for (const item of bleLogAudioBuffer) {
+    csvContent += `${item.timestamp_ms},AUDIO,${item.samples.join(',')}\n`;
+  }
+  for (const item of bleLogThermalBuffer) {
+    csvContent += `${item.timestamp_ms},THERMAL,ROW${item.row},${item.pixels.join(',')}\n`;
+  }
+  
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  link.setAttribute("href", url);
+  link.setAttribute("download", `ble_data_${Date.now()}.csv`);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }
 
 function decodeSensorConfigStatus(value) {
@@ -1440,7 +1918,223 @@ function decodeSensorConfigStatus(value) {
   return configs.join(' | ');
 }
 
+function decodeTdmImuSlot(value, timestampMs) {
+  const imuLen = value.getUint8(TDM_IMU_LEN_OFFSET);
+  if (imuLen !== TDM_IMU_BYTES) {
+    return 'imu=hold';
+  }
+
+  const raw = [];
+  for (let i = 0; i < 9; i++) {
+    raw.push(value.getInt16(TDM_IMU_OFFSET + i * 2, true));
+  }
+
+  const ax = raw[0] * TDM_ACCEL_SCALE_MPS2_PER_LSB;
+  const ay = raw[1] * TDM_ACCEL_SCALE_MPS2_PER_LSB;
+  const az = raw[2] * TDM_ACCEL_SCALE_MPS2_PER_LSB;
+  const gx = raw[3] * TDM_GYRO_SCALE_DPS_PER_LSB;
+  const gy = raw[4] * TDM_GYRO_SCALE_DPS_PER_LSB;
+  const gz = raw[5] * TDM_GYRO_SCALE_DPS_PER_LSB;
+  const mx = raw[6] * TDM_MAG_SCALE_UT_PER_LSB;
+  const my = raw[7] * TDM_MAG_SCALE_UT_PER_LSB;
+  const mz = raw[8] * TDM_MAG_SCALE_UT_PER_LSB;
+
+  els.imuTime.textContent = `${timestampMs} ms`;
+  els.imuAx.textContent = formatNumber(ax);
+  els.imuAy.textContent = formatNumber(ay);
+  els.imuAz.textContent = formatNumber(az);
+  els.imuGx.textContent = formatNumber(gx);
+  els.imuGy.textContent = formatNumber(gy);
+  els.imuGz.textContent = formatNumber(gz);
+  els.imuMx.textContent = formatNumber(mx);
+  els.imuMy.textContent = formatNumber(my);
+  els.imuMz.textContent = formatNumber(mz);
+
+  if (isBleLogging && els.bleLogImu?.checked) {
+    bleLogImuBuffer.push({ timestamp_ms: timestampMs, ax, ay, az, gx, gy, gz, mx, my, mz });
+    if (els.bleLogImuCount) els.bleLogImuCount.textContent = bleLogImuBuffer.length;
+  }
+
+  return `imu=[${raw.join(',')}]`;
+}
+
+function decodeTdmThermalSlot(value, timestampMs) {
+  const thermalLen = value.getUint8(TDM_THERMAL_LEN_OFFSET);
+  if (thermalLen !== TDM_THERMAL_BYTES) {
+    return 'thermal=0';
+  }
+
+  const row = value.getUint8(TDM_THERMAL_ROW_OFFSET);
+  if (row >= THERMAL_NUM_ROWS) {
+    thermalDroppedFrames += 1;
+    thermalTdmFrameActive = false;
+    thermalTdmExpectedRow = 0;
+    if (els.thermalDropped) els.thermalDropped.textContent = String(thermalDroppedFrames);
+    if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `Bad TDM row ${row}`;
+    return `thermalBadRow=${row}`;
+  }
+
+  if (row === 0) {
+    resetThermalAssembly();
+    thermalCurrentFrameTime = timestampMs * 1000;
+    thermalTdmFrameActive = true;
+    thermalTdmExpectedRow = 0;
+  } else if (!thermalTdmFrameActive) {
+    thermalDroppedFrames += 1;
+    thermalTdmExpectedRow = 0;
+    if (els.thermalDropped) els.thermalDropped.textContent = String(thermalDroppedFrames);
+    if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `Waiting for TDM row 0, dropped row ${row}`;
+    return `thermalWaitingRow0=${row}`;
+  }
+
+  if (row !== thermalTdmExpectedRow) {
+    const expected = thermalTdmExpectedRow;
+    thermalDroppedFrames += 1;
+    resetThermalAssembly();
+    thermalTdmFrameActive = false;
+    thermalTdmExpectedRow = 0;
+    thermalCurrentFrameTime = null;
+    if (els.thermalDropped) els.thermalDropped.textContent = String(thermalDroppedFrames);
+    if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `TDM row jump ${row}, expected ${expected}`;
+    return `thermalRowJump=${row}/${expected}`;
+  }
+
+  for (let col = 0; col < THERMAL_NUM_COLS; col++) {
+    thermalFrameRaw[row * THERMAL_NUM_COLS + col] =
+      value.getInt16(TDM_THERMAL_OFFSET + col * 2, false);
+  }
+
+  if (!thermalChunkReceived[row]) {
+    thermalChunkReceived[row] = 1;
+    thermalChunksThisFrame += 1;
+  }
+
+  thermalTdmExpectedRow += 1;
+  if (els.thermalChunks) els.thermalChunks.textContent = `${thermalChunksThisFrame}/${THERMAL_NUM_ROWS}`;
+  if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `TDM row ${row + 1}/${THERMAL_NUM_ROWS}`;
+  if (els.thermalState) els.thermalState.textContent = 'Receiving TDM rows';
+
+  if (thermalChunksThisFrame >= THERMAL_NUM_ROWS) {
+    if (isBleLogging && els.bleLogThermal?.checked) {
+      bleLogThermalBuffer.push({ timestamp_ms: timestampMs, row, pixels: Array.from(thermalFrameRaw) });
+      if (els.bleLogThermalCount) els.bleLogThermalCount.textContent = bleLogThermalBuffer.length;
+    }
+    
+    renderThermalFrame();
+    resetThermalAssembly();
+    thermalTdmFrameActive = false;
+    thermalTdmExpectedRow = 0;
+    thermalCurrentFrameTime = null;
+  }
+
+  return `thermalRow=${row}`;
+}
+
+function decodeTdmStreamPacket(value) {
+  const seq = value.getUint8(0);
+  const timestampMs = value.getUint32(1, false);
+  let droppedNow = 0;
+
+  if (lastTdmSeq !== null) {
+    droppedNow = (seq - lastTdmSeq - 1 + 256) & 0xff;
+    if (droppedNow > 0) {
+      tdmDroppedPackets += droppedNow;
+    }
+  }
+  lastTdmSeq = seq;
+
+  const micLenRaw = value.getUint8(5);
+  const micLen = Math.min(micLenRaw & 0xfe, TDM_MIC_BYTES);
+  const micSamples = [];
+  for (let offset = 0; offset < micLen; offset += 2) {
+    micSamples.push(value.getInt16(TDM_MIC_OFFSET + offset, true));
+  }
+
+  const thermalText = decodeTdmThermalSlot(value, timestampMs);
+  const imuText = decodeTdmImuSlot(value, timestampMs);
+  const thermalLen = value.getUint8(TDM_THERMAL_LEN_OFFSET);
+  const imuLen = value.getUint8(TDM_IMU_LEN_OFFSET);
+
+  els.audioSeq.textContent = String(seq);
+  els.audioRate.textContent = `${TDM_SAMPLE_RATE_HZ} Hz PCM / ${formatFrequency(TDM_SAMPLE_RATE_HZ)} plot`;
+  els.audioSampleInterval.textContent = `${(1000000 / TDM_SAMPLE_RATE_HZ).toFixed(2)} us`;
+  els.audioFrames.textContent = `${micSamples.length}/${TDM_MIC_BYTES / 2} samples, ${TDM_PACKET_PERIOD_MS} ms slot`;
+  els.audioPacketInfo.textContent =
+    `TDM ${value.byteLength} B, mic=${micLen}/${TDM_MIC_BYTES}, thermal=${thermalLen}/${TDM_THERMAL_BYTES}, imu=${imuLen}/${TDM_IMU_BYTES}, dropped=${tdmDroppedPackets}`;
+
+  if (droppedNow > 0) {
+    els.audioFrequencyConfidence.textContent = `packet loss +${droppedNow}, total ${tdmDroppedPackets}`;
+  }
+
+  if (micSamples.length > 0) {
+    let peak = 0;
+    let sumAbs = 0;
+    for (const sample of micSamples) {
+      const abs = Math.abs(sample);
+      peak = Math.max(peak, abs);
+      sumAbs += abs;
+    }
+
+    const meanAbs = Math.round(sumAbs / micSamples.length);
+    const frequency = estimateWaveFrequency(micSamples, TDM_SAMPLE_RATE_HZ);
+    const samplesPerCycle = frequency.hz ? TDM_SAMPLE_RATE_HZ / frequency.hz : null;
+    const p2p = getPeakToPeak(micSamples);
+
+    els.audioPeak.textContent = `mono ${peak}`;
+    els.audioMean.textContent = `mono ${meanAbs}`;
+    els.audioFrequency.textContent = formatFrequency(frequency.hz);
+    els.audioSamplesPerCycle.textContent = Number.isFinite(samplesPerCycle) ? `${samplesPerCycle.toFixed(2)} pts` : '-';
+    els.audioPeakToPeak.textContent = `${p2p} raw`;
+    if (droppedNow === 0) {
+      els.audioFrequencyConfidence.textContent = frequency.detail;
+    }
+    els.audioWaveState.textContent = `Receiving ${TDM_PACKET_SIZE} B TDM stream`;
+
+    audioPeakHistory.push(peak);
+    if (audioPeakHistory.length > AUDIO_PEAK_HISTORY_LIMIT) {
+      audioPeakHistory.shift();
+    }
+
+    lastAudioSamples = micSamples;
+    lastAudioPeak = peak;
+    lastAudioDurationMs = (micSamples.length / TDM_SAMPLE_RATE_HZ) * 1000;
+    lastAudioPointRate = TDM_SAMPLE_RATE_HZ;
+
+    if (isRecordingAudio) {
+      appendRecordedTdmSamples(timestampMs, micSamples, droppedNow);
+      const recordedSecs = (recordedAudioBuffer.length / TDM_SAMPLE_RATE_HZ).toFixed(1);
+      els.recordStatus.textContent = `${recordedSecs}s`;
+      els.playAudioBtn.disabled = false;
+    }
+
+    if (isBleLogging && els.bleLogAudio?.checked) {
+      if (droppedNow > 0) {
+        bleLogDroppedCount += droppedNow;
+        if (els.bleLogDropped) els.bleLogDropped.textContent = String(bleLogDroppedCount);
+      }
+      bleLogAudioBuffer.push({ timestamp_ms: timestampMs, samples: micSamples, dropped_packets: droppedNow });
+
+    drawAudioWaveform(lastAudioSamples, {
+      peak,
+      durationMs: lastAudioDurationMs,
+      pointRate: TDM_SAMPLE_RATE_HZ,
+      sampleRate: TDM_SAMPLE_RATE_HZ,
+      formatLabel: 'tdm pcm16'
+    });
+  } else {
+    els.audioWaveState.textContent = 'TDM active, mic slot empty';
+  }
+
+  els.lastSensor.textContent = 'TDM composite';
+  els.lastPayload.textContent = `${value.byteLength} B`;
+  return `seq=${seq} t=${timestampMs}ms mic=${micLen}B thermal=${thermalLen}B imu=${imuLen}B drop=${tdmDroppedPackets} ${thermalText} ${imuText}`;
+}
+
 function decodeAudioWaveformPacket(value) {
+  if (value && value.byteLength === TDM_PACKET_SIZE) {
+    return decodeTdmStreamPacket(value);
+  }
+
   if (!value || value.byteLength < 19) {
     return value ? `short audio packet ${bytesToHex(value)}` : 'empty audio packet';
   }
@@ -1964,6 +2658,47 @@ if (els.readHwStatusBtn) {
   });
 }
 
+if (els.startSdLoggerBtn) {
+  els.startSdLoggerBtn.addEventListener('click', () => {
+    startSdDataLogger().catch((error) => log(`SD logger start failed: ${error.message}`));
+  });
+}
+if (els.stopSdLoggerBtn) {
+  els.stopSdLoggerBtn.addEventListener('click', () => {
+    stopSdDataLogger().catch((error) => log(`SD logger stop failed: ${error.message}`));
+  });
+}
+
+if (els.startBleLoggerBtn) {
+  els.startBleLoggerBtn.addEventListener('click', () => {
+    startBleDataLogger().catch((error) => log(`BLE logger start failed: ${error.message}`));
+  });
+}
+if (els.stopBleLoggerBtn) {
+  els.stopBleLoggerBtn.addEventListener('click', () => {
+    stopBleDataLogger().catch((error) => log(`BLE logger stop failed: ${error.message}`));
+  });
+}
+if (els.downloadBleLogBtn) {
+  els.downloadBleLogBtn.addEventListener('click', downloadBleLogCSV);
+}
+
+if (els.tabSdLogger && els.tabBleLogger) {
+  els.tabSdLogger.addEventListener('click', () => {
+    els.tabSdLogger.classList.add('active');
+    els.tabBleLogger.classList.remove('active');
+    els.sdLoggerTab.classList.add('active');
+    els.bleLoggerTab.classList.remove('active');
+  });
+  els.tabBleLogger.addEventListener('click', () => {
+    els.tabBleLogger.classList.add('active');
+    els.tabSdLogger.classList.remove('active');
+    els.bleLoggerTab.classList.add('active');
+    els.sdLoggerTab.classList.remove('active');
+  });
+}
+
+
 resetFacts();
 resetAudioWaveformValues();
 resetThermalValues();
@@ -2000,7 +2735,8 @@ els.recordAudioBtn.addEventListener('click', () => {
     // Start recording
     isRecordingAudio = true;
     recordedAudioBuffer = [];
-    recordedAudioPointRate = 0;
+    recordedAudioStartMs = null;
+    recordedAudioPointRate = TDM_SAMPLE_RATE_HZ;
     els.recordStatus.textContent = '0.0s';
     els.playAudioBtn.disabled = true;
     els.recordAudioBtn.textContent = '⏹ Stop Recording';

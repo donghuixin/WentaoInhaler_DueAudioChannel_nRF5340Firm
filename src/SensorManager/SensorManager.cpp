@@ -24,6 +24,7 @@
 #include <set>
 
 #include <sensor_service.h>
+#include "audio_datapath.h"
 
 #include <zephyr/logging/log.h>
 #include <sensor_service.h>
@@ -208,6 +209,22 @@ static void config_work_handler(struct k_work *work) {
 
 	sensor->sd_logging(config.storageOptions & DATA_STORAGE);
 	sensor->ble_stream(config.storageOptions & DATA_STREAMING);
+	if (config.sensorId == ID_MICRO) {
+		uint8_t channel_mask = 0x03U;
+		if ((config.storageOptions & DATA_STORAGE) != 0U) {
+			channel_mask = 0U;
+			if ((config.storageOptions & SENSOR_STORAGE_AUDIO_LEFT) != 0U) {
+				channel_mask |= 0x01U;
+			}
+			if ((config.storageOptions & SENSOR_STORAGE_AUDIO_RIGHT) != 0U) {
+				channel_mask |= 0x02U;
+			}
+			if (channel_mask == 0U) {
+				channel_mask = 0x03U;
+			}
+		}
+		audio_datapath_set_sd_channel_mask(channel_mask);
+	}
 
 	if (config.storageOptions & (DATA_STORAGE | DATA_STREAMING)) {
 		if (sensor->init(&sensor_queue)) {
@@ -228,7 +245,12 @@ static void config_work_handler(struct k_work *work) {
 			// Start SDLogger with timestamp-based filename
 			std::string filename = recording_name_prefix + std::to_string(micros());
 			int ret = sdlogger.begin(filename);
-			if (ret == 0) state_indicator.set_sd_state(SD_RECORDING);
+			if (ret == 0) {
+				state_indicator.set_sd_state(SD_RECORDING);
+			} else {
+				state_indicator.set_sd_state(SD_FAULT);
+				sd_sensors.erase(config.sensorId);
+			}
 		}
 	} else if (sd_sensors.find(config.sensorId) != sd_sensors.end()) {
 		sd_sensors.erase(config.sensorId);

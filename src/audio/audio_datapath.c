@@ -249,6 +249,7 @@ static struct k_thread data_thread_data;
 static k_tid_t data_thread_id;
 
 bool _record_to_sd = false;
+static uint8_t _sd_channel_mask = 0x03;
 
 int _count = 0;
 
@@ -282,35 +283,10 @@ static void data_thread(void *arg1, void *arg2, void *arg3)
             data_fifo_block_free(ctrl_blk.in.fifo, tmp_pcm_raw_data[i]);
 
 			if (_record_to_sd) {
-				struct sensor_msg audio_msg;
-	
-				audio_msg.sd = true;
-				audio_msg.stream = false;
-	
-				audio_msg.data.id = ID_MICRO;
-				audio_msg.data.size = BLOCK_SIZE_BYTES; // SENQUEUE_FRAME_SIZE;
-				audio_msg.data.time = time_stamp;
-
-				/*k_mutex_lock(&write_mutex, K_FOREVER);
-
-				uint32_t data_size = sizeof(audio_msg.data.id) + sizeof(audio_msg.data.size) + sizeof(audio_msg.data.time); // + audio_msg.data.size;
-
-				uint32_t bytes_written = ring_buf_put(&ring_buffer, (uint8_t *) &audio_msg.data, data_size);
-				bytes_written += ring_buf_put(&ring_buffer, audio_item.data + (i * BLOCK_SIZE_BYTES), BLOCK_SIZE_BYTES);
-
-				k_mutex_unlock(&write_mutex);*/
-
-				uint32_t data_size[2] = {sizeof(audio_msg.data.id) + sizeof(audio_msg.data.size) + sizeof(audio_msg.data.time), BLOCK_SIZE_BYTES};
-
-				const void *data_ptrs[2] = {
-					&audio_msg.data,
-					audio_item.data + (i * BLOCK_SIZE_BYTES)
-				};
-
-				sdlogger_write_data(&data_ptrs, data_size, 2);
-
-				//sdlogger_write_data(&audio_msg.data, data_size);
-				//sdlogger_write_data(audio_item.data + (i * BLOCK_SIZE_BYTES), BLOCK_SIZE_BYTES);
+				(void)sdlogger_write_audio_block(time_stamp,
+					audio_item.data + (i * BLOCK_SIZE_BYTES),
+					BLOCK_SIZE_BYTES, _sd_channel_mask,
+					CONFIG_AUDIO_SAMPLE_RATE_HZ);
 			}
 
 			k_yield();
@@ -341,6 +317,11 @@ void set_sensor_queue(struct k_msgq *queue)
 
 void record_to_sd(bool active) {
 	_record_to_sd = active;
+}
+
+void audio_datapath_set_sd_channel_mask(uint8_t channel_mask)
+{
+	_sd_channel_mask = (channel_mask & 0x03U) == 0U ? 0x03U : (channel_mask & 0x03U);
 }
 
 // Funktion, um den neuen Thread zu starten

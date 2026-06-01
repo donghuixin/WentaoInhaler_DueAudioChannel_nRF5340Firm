@@ -211,6 +211,90 @@ select:focus, input[type="number"]:focus {
   border-color: var(--accent);
 }
 
+.sd-logger-panel {
+  grid-column: 1 / -1;
+}
+
+.sd-logger-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: center;
+}
+
+.check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.check-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.form-row.compact {
+  margin-bottom: 0;
+  justify-content: space-between;
+}
+
+.audio-channel-row {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+/* Logger Tab Switching */
+.logger-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  padding: 4px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+}
+
+.logger-tab {
+  flex: 1;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-muted);
+  background: transparent;
+  transition: var(--transition);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.logger-tab:hover:not(.active) {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.05);
+  transform: none;
+}
+
+.logger-tab.active {
+  color: var(--text-main);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.3), rgba(37, 99, 235, 0.2));
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.15);
+}
+
+.logger-tab-content {
+  display: none;
+}
+
+.logger-tab-content.active {
+  display: block;
+}
+
 /* Metric Grid */
 .metric-grid {
   display: grid;

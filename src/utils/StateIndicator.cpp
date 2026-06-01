@@ -140,7 +140,7 @@ void StateIndicator::set_state(struct earable_state state) {
 
     switch (_state.charging_state) {
     case POWER_CONNECTED:
-        led_controller.setColor(LED_ORANGE);
+        led_controller.pulse(LED_ORANGE, 1000, 1000, 512, 2000);
         break;
     case CHARGING:
         led_controller.pulse(LED_ORANGE, 1000, 1000, 512, 2000);

@@ -116,6 +116,10 @@ struct sensor_config {
 	uint8_t storageOptions;
 } __attribute__((packed));
 
+#define SENSOR_STORAGE_AUDIO_LEFT  0x10U
+#define SENSOR_STORAGE_AUDIO_RIGHT 0x20U
+#define SENSOR_STORAGE_AUDIO_BOTH  (SENSOR_STORAGE_AUDIO_LEFT | SENSOR_STORAGE_AUDIO_RIGHT)
+
 
 struct battery_settings {
     float u_nominal;

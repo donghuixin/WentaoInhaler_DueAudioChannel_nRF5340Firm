@@ -410,13 +410,13 @@ void BQ25120a::exit_high_impedance() {
 }
 
 void BQ25120a::disable_charge() {
-        uint8_t status = read_charging_state();
+        uint8_t status = read_charge_ctrl_raw();
         status |= 0x2; // set bit 1 (CE) to 1 to disable charge
         writeReg(registers::CHARGE_CTRL, &status, sizeof(status));
 }
 
 void BQ25120a::enable_charge() {
-        uint8_t status = read_charging_state();
+        uint8_t status = read_charge_ctrl_raw();
         status &= ~0x2; // clear bit 1 (CE) to 0 to enable charge
         writeReg(registers::CHARGE_CTRL, &status, sizeof(status));
 }

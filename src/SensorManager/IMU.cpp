@@ -1,11 +1,14 @@
 #include "IMU.h"
 
 #include "SensorManager.h"
+#include "../bluetooth/gatt_services/audio_waveform_service.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/zbus/zbus.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/i2c.h>
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/sys/byteorder.h>
 
 #include <zephyr/logging/log.h>
 #include <errno.h>
@@ -15,6 +18,209 @@ static struct sensor_msg msg_imu;
 
 #define BMI270_NODE DT_NODELABEL(bmi270)
 static const struct device *const bmi270 = DEVICE_DT_GET(BMI270_NODE);
+static const struct i2c_dt_spec bmi270_i2c = I2C_DT_SPEC_GET(BMI270_NODE);
+
+#define BMI270_REG_AUX_X_LSB       0x04U
+#define BMI270_REG_AUX_CONF        0x44U
+#define BMI270_REG_AUX_DEV_ID      0x4BU
+#define BMI270_REG_AUX_IF_CONF     0x4CU
+#define BMI270_REG_AUX_RD_ADDR     0x4DU
+#define BMI270_REG_AUX_WR_ADDR     0x4EU
+#define BMI270_REG_AUX_WR_DATA     0x4FU
+#define BMI270_REG_PWR_CTRL        0x7DU
+#define BMI270_PWR_CTRL_AUX_EN     0x01U
+#define BMI270_AUX_MANUAL_ENABLE   0x80U
+#define BMI270_AUX_BURST_8_BYTES   0x03U
+
+#define BMM150_AUX_I2C_ADDR        0x10U
+#define BMM150_REG_X_L             0x42U
+#define BMM150_REG_POWER           0x4BU
+#define BMM150_REG_OPMODE_ODR      0x4CU
+#define BMM150_REG_REP_XY          0x51U
+#define BMM150_REG_REP_Z           0x52U
+#define BMM150_POWER_ON            0x01U
+#define BMM150_MODE_NORMAL         0x00U
+#define BMM150_REP_XY_REGULAR      0x04U
+#define BMM150_REP_Z_REGULAR       0x0EU
+#define BMM150_RAW_TO_UT           0.3f
+
+static bool bmm150_aux_ready;
+
+static int bmi270_reg_update_byte(uint8_t reg, uint8_t mask, uint8_t value)
+{
+	uint8_t old_value;
+	int ret = i2c_reg_read_byte_dt(&bmi270_i2c, reg, &old_value);
+
+	if (ret) {
+		return ret;
+	}
+
+	uint8_t new_value = (old_value & ~mask) | (value & mask);
+	if (new_value == old_value) {
+		return 0;
+	}
+
+	return i2c_reg_write_byte_dt(&bmi270_i2c, reg, new_value);
+}
+
+static int bmm150_aux_write(uint8_t reg, uint8_t value)
+{
+	int ret = i2c_reg_write_byte_dt(&bmi270_i2c, BMI270_REG_AUX_WR_DATA, value);
+
+	if (ret) {
+		return ret;
+	}
+
+	ret = i2c_reg_write_byte_dt(&bmi270_i2c, BMI270_REG_AUX_WR_ADDR, reg);
+	if (ret) {
+		return ret;
+	}
+
+	k_msleep(2);
+	return 0;
+}
+
+static uint8_t bmm150_odr_reg_for_rate(float rate_hz)
+{
+	if (rate_hz <= 2.0f) {
+		return 0x01U;
+	}
+	if (rate_hz <= 6.0f) {
+		return 0x02U;
+	}
+	if (rate_hz <= 8.0f) {
+		return 0x03U;
+	}
+	if (rate_hz <= 10.0f) {
+		return 0x00U;
+	}
+	if (rate_hz <= 15.0f) {
+		return 0x04U;
+	}
+	if (rate_hz <= 20.0f) {
+		return 0x05U;
+	}
+	if (rate_hz <= 25.0f) {
+		return 0x06U;
+	}
+
+	return 0x07U;
+}
+
+static uint8_t bmi270_aux_odr_reg_for_rate(float rate_hz)
+{
+	if (rate_hz <= 25.0f) {
+		return 0x06U;
+	}
+	if (rate_hz <= 50.0f) {
+		return 0x07U;
+	}
+	if (rate_hz <= 100.0f) {
+		return 0x08U;
+	}
+	if (rate_hz <= 200.0f) {
+		return 0x09U;
+	}
+	if (rate_hz <= 400.0f) {
+		return 0x0AU;
+	}
+	return 0x0BU;
+}
+
+static int bmm150_aux_configure(float imu_rate_hz, uint8_t bmi270_aux_odr_code)
+{
+	if (!i2c_is_ready_dt(&bmi270_i2c)) {
+		return -ENODEV;
+	}
+
+	int ret = bmi270_reg_update_byte(BMI270_REG_PWR_CTRL,
+					 BMI270_PWR_CTRL_AUX_EN,
+					 BMI270_PWR_CTRL_AUX_EN);
+	if (ret) {
+		return ret;
+	}
+	k_msleep(2);
+
+	ret = i2c_reg_write_byte_dt(&bmi270_i2c, BMI270_REG_AUX_DEV_ID,
+				    BMM150_AUX_I2C_ADDR);
+	if (ret) {
+		return ret;
+	}
+
+	ret = i2c_reg_write_byte_dt(&bmi270_i2c, BMI270_REG_AUX_IF_CONF,
+				    BMI270_AUX_MANUAL_ENABLE);
+	if (ret) {
+		return ret;
+	}
+	k_msleep(2);
+
+	ret = bmm150_aux_write(BMM150_REG_POWER, BMM150_POWER_ON);
+	if (ret) {
+		return ret;
+	}
+	k_msleep(3);
+
+	ret = bmm150_aux_write(BMM150_REG_REP_XY, BMM150_REP_XY_REGULAR);
+	if (ret) {
+		return ret;
+	}
+	ret = bmm150_aux_write(BMM150_REG_REP_Z, BMM150_REP_Z_REGULAR);
+	if (ret) {
+		return ret;
+	}
+
+	const uint8_t bmm_odr = bmm150_odr_reg_for_rate(imu_rate_hz);
+	const uint8_t bmm_opmode_odr = (uint8_t)((bmm_odr << 3) |
+						 (BMM150_MODE_NORMAL << 1));
+	ret = bmm150_aux_write(BMM150_REG_OPMODE_ODR, bmm_opmode_odr);
+	if (ret) {
+		return ret;
+	}
+
+	ret = i2c_reg_write_byte_dt(&bmi270_i2c, BMI270_REG_AUX_RD_ADDR,
+				    BMM150_REG_X_L);
+	if (ret) {
+		return ret;
+	}
+	ret = i2c_reg_write_byte_dt(&bmi270_i2c, BMI270_REG_AUX_CONF,
+				    bmi270_aux_odr_code & 0x0fU);
+	if (ret) {
+		return ret;
+	}
+	ret = i2c_reg_write_byte_dt(&bmi270_i2c, BMI270_REG_AUX_IF_CONF,
+				    BMI270_AUX_BURST_8_BYTES);
+	if (ret) {
+		return ret;
+	}
+
+	bmm150_aux_ready = true;
+	LOG_INF("BMM150 auxiliary magnetometer configured via BMI270 ASD/ASC at %u Hz request",
+		(unsigned int)imu_rate_hz);
+	return 0;
+}
+
+static bool bmm150_aux_read(float mag_ut[3])
+{
+	if (!bmm150_aux_ready || (mag_ut == NULL)) {
+		return false;
+	}
+
+	uint8_t data[8];
+	int ret = i2c_burst_read_dt(&bmi270_i2c, BMI270_REG_AUX_X_LSB,
+				    data, sizeof(data));
+	if (ret) {
+		return false;
+	}
+
+	const int16_t raw_x = (int16_t)sys_get_le16(&data[0]) >> 3;
+	const int16_t raw_y = (int16_t)sys_get_le16(&data[2]) >> 3;
+	const int16_t raw_z = (int16_t)sys_get_le16(&data[4]) >> 1;
+
+	mag_ut[0] = raw_x * BMM150_RAW_TO_UT;
+	mag_ut[1] = raw_y * BMM150_RAW_TO_UT;
+	mag_ut[2] = raw_z * BMM150_RAW_TO_UT;
+	return true;
+}
 
 IMU IMU::sensor;
 
@@ -57,6 +263,12 @@ void IMU::update_sensor(struct k_work *work) {
 	for (int i = 0; i < 3; i++) {
 		accel_data[i] = sensor_value_to_float(&accel[i]);
 		gyro_data[i] = sensor_value_to_float(&gyro[i]) * 57.2957795f;
+	}
+
+	(void)bmm150_aux_read(magno_data);
+
+	if (sensor._ble_stream) {
+		audio_waveform_service_submit_imu_sample(accel_data, gyro_data, magno_data);
 	}
 
 	if (sample_log_count < 5) {
@@ -198,6 +410,14 @@ void IMU::start(int sample_rate_idx) {
 		return;
 	}
 
+	ret = bmm150_aux_configure(sample_rates.true_sample_rates[sample_rate_idx],
+				   bmi270_aux_odr_reg_for_rate(
+					   sample_rates.true_sample_rates[sample_rate_idx]));
+	if (ret) {
+		bmm150_aux_ready = false;
+		LOG_WRN("BMM150 auxiliary magnetometer config failed: %d", ret);
+	}
+
 	_running = true;
 
 	k_timer_start(&sensor.sensor_timer, K_NO_WAIT, t);
@@ -219,6 +439,8 @@ void IMU::stop() {
 			      SENSOR_ATTR_SAMPLING_FREQUENCY, &sampling_freq);
 	(void)sensor_attr_set(bmi270, SENSOR_CHAN_GYRO_XYZ,
 			      SENSOR_ATTR_SAMPLING_FREQUENCY, &sampling_freq);
+	(void)bmi270_reg_update_byte(BMI270_REG_PWR_CTRL, BMI270_PWR_CTRL_AUX_EN, 0U);
+	bmm150_aux_ready = false;
 
     pm_device_runtime_put(ls_1_8);
 }

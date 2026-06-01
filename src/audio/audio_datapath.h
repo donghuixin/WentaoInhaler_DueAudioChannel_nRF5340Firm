@@ -95,6 +95,7 @@ int audio_datapath_init(void);
 void start_data_thread(void);
 
 void record_to_sd(bool active);
+void audio_datapath_set_sd_channel_mask(uint8_t channel_mask);
 
 void set_sensor_queue(struct k_msgq *queue);
 

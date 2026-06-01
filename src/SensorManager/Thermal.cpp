@@ -5,6 +5,7 @@
 
 #include "Thermal.h"
 #include "SensorManager.h"
+#include "../bluetooth/gatt_services/audio_waveform_service.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
@@ -86,6 +87,19 @@ void Thermal::update_sensor(struct k_work *work)
 
 	const uint64_t frame_time = micros();
 
+	if (sensor._ble_stream) {
+		for (uint8_t row = 0; row < MLX90642_NUM_ROWS; row++) {
+			const uint16_t offset = (uint16_t)row * MLX90642_NUM_COLS;
+			audio_waveform_service_submit_thermal_row(&s_frame_pixels[offset],
+								  MLX90642_NUM_COLS,
+								  row);
+		}
+	}
+
+	if (!sensor._sd_logging) {
+		return;
+	}
+
 	for (uint8_t chunk = 0; chunk < THERMAL_TOTAL_CHUNKS; chunk++) {
 		const uint16_t offset = (uint16_t)chunk * THERMAL_PIXELS_PER_CHUNK;
 		const uint8_t count = (uint8_t)MIN(
@@ -93,7 +107,7 @@ void Thermal::update_sensor(struct k_work *work)
 			(uint16_t)(MLX90642_NUM_PIXELS - offset));
 
 		msg_thermal.sd = sensor._sd_logging;
-		msg_thermal.stream = sensor._ble_stream;
+		msg_thermal.stream = false;
 
 		msg_thermal.data.id = ID_THERMAL;
 		/* Payload = chunk header (2 bytes) + N int16 raw pixels. */

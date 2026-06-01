@@ -1,187 +1,200 @@
 #include "audio_waveform_service.h"
 
 #include <errno.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(audio_waveform_service, CONFIG_BLE_LOG_LEVEL);
 
-#ifndef CONFIG_AUDIO_SAMPLE_RATE_HZ
-#define CONFIG_AUDIO_SAMPLE_RATE_HZ 0
-#endif
-
 #define AUDIO_WAVEFORM_CONTROL_ENABLE BIT(0)
 #define AUDIO_WAVEFORM_CONTROL_RESET BIT(1)
-#define AUDIO_WAVEFORM_CONTROL_WINDOW_SHIFT 2
-#define AUDIO_WAVEFORM_CONTROL_WINDOW_MASK (BIT(2) | BIT(3))
 
-#define AUDIO_WAVEFORM_DEFAULT_SAMPLE_RATE_HZ 48000U
-#define AUDIO_WAVEFORM_NOTIFY_DIVISOR 20U
-#define AUDIO_WAVEFORM_MAX_PLOT_POINTS 480U
-#define AUDIO_WAVEFORM_QUEUE_DEPTH 8
-#define AUDIO_WAVEFORM_THREAD_STACK_SIZE 1536
-#define AUDIO_WAVEFORM_THREAD_PRIORITY 7
+#define AUDIO_TDM_MIC_RING_PACKETS 16U
+#define AUDIO_TDM_MIC_RING_SAMPLES \
+	(AUDIO_WAVEFORM_MIC_SAMPLES_PER_PACKET * AUDIO_TDM_MIC_RING_PACKETS)
+#define AUDIO_TDM_THERMAL_QUEUE_DEPTH 24U
+#define AUDIO_TDM_THREAD_STACK_SIZE 1536
+#define AUDIO_TDM_THREAD_PRIORITY 7
+
+BUILD_ASSERT(sizeof(struct audio_waveform_packet) == AUDIO_WAVEFORM_PACKET_SIZE);
+BUILD_ASSERT(offsetof(struct audio_waveform_packet, seq) == 0U);
+BUILD_ASSERT(offsetof(struct audio_waveform_packet, timestamp_be) == 1U);
+BUILD_ASSERT(offsetof(struct audio_waveform_packet, mic_valid_len) == 5U);
+BUILD_ASSERT(offsetof(struct audio_waveform_packet, mic_payload) == 6U);
+BUILD_ASSERT(offsetof(struct audio_waveform_packet, thermal_valid_len) == 166U);
+BUILD_ASSERT(offsetof(struct audio_waveform_packet, thermal_row_index) == 167U);
+BUILD_ASSERT(offsetof(struct audio_waveform_packet, thermal_payload) == 168U);
+BUILD_ASSERT(offsetof(struct audio_waveform_packet, imu_valid_len) == 232U);
+BUILD_ASSERT(offsetof(struct audio_waveform_packet, imu_payload) == 233U);
+BUILD_ASSERT(AUDIO_WAVEFORM_MIC_PAYLOAD_SIZE ==
+	     AUDIO_WAVEFORM_MIC_SAMPLES_PER_PACKET * sizeof(int16_t));
+BUILD_ASSERT(AUDIO_WAVEFORM_THERMAL_PAYLOAD_SIZE ==
+	     AUDIO_WAVEFORM_THERMAL_PIXELS_PER_ROW * sizeof(int16_t));
+BUILD_ASSERT(AUDIO_WAVEFORM_IMU_PAYLOAD_SIZE == 9U * sizeof(int16_t));
 
 static uint8_t control_value;
 static bool capture_enabled;
 static bool notify_enabled;
-static uint8_t window_mode;
-static uint32_t source_block_count;
-static uint32_t sequence;
-static uint16_t window_id;
+static bool mic_stream_enabled;
+static uint8_t sequence;
 static struct audio_waveform_packet latest_packet;
-static int16_t scope_points[AUDIO_WAVEFORM_MAX_PLOT_POINTS];
-static uint16_t scope_point_count;
-static uint16_t scope_target_frames;
-static uint16_t scope_target_points;
-static uint16_t scope_decimation;
-static uint16_t scope_frame_count;
-static bool scope_capture_active;
-static uint32_t scope_sum_abs_l;
-static uint32_t scope_sum_abs_r;
-static uint16_t scope_peak_l;
-static uint16_t scope_peak_r;
-static int16_t scope_min_mono;
-static int16_t scope_max_mono;
-static int32_t decimation_sum;
-static uint16_t decimation_count;
 
-static struct k_thread audio_waveform_thread_data;
-static K_THREAD_STACK_DEFINE(audio_waveform_thread_stack, AUDIO_WAVEFORM_THREAD_STACK_SIZE);
-K_MSGQ_DEFINE(audio_waveform_queue, sizeof(struct audio_waveform_packet),
-	      AUDIO_WAVEFORM_QUEUE_DEPTH, 4);
+static struct k_spinlock stream_lock;
 
-static uint16_t abs_i16_u16(int16_t value)
+static int16_t mic_ring[AUDIO_TDM_MIC_RING_SAMPLES];
+static uint16_t mic_read_idx;
+static uint16_t mic_write_idx;
+static uint16_t mic_count;
+
+static uint8_t thermal_rows[AUDIO_TDM_THERMAL_QUEUE_DEPTH]
+			   [AUDIO_WAVEFORM_THERMAL_PAYLOAD_SIZE];
+static uint8_t thermal_row_indices[AUDIO_TDM_THERMAL_QUEUE_DEPTH];
+static uint8_t thermal_read_idx;
+static uint8_t thermal_write_idx;
+static uint8_t thermal_count;
+
+static uint8_t imu_payload[AUDIO_WAVEFORM_IMU_PAYLOAD_SIZE];
+static bool imu_pending;
+
+static uint16_t dropped_mic_samples = 0;
+
+static struct k_thread audio_tdm_thread_data;
+static K_THREAD_STACK_DEFINE(audio_tdm_thread_stack, AUDIO_TDM_THREAD_STACK_SIZE);
+
+static struct k_sem tdm_tick_sem;
+static void tdm_tick_handler(struct k_timer *timer);
+K_TIMER_DEFINE(tdm_tick_timer, tdm_tick_handler, NULL);
+
+static void tdm_tick_handler(struct k_timer *timer)
 {
-	return value == INT16_MIN ? 32768U : (uint16_t)abs(value);
+	k_sem_give(&tdm_tick_sem);
 }
 
-static uint32_t waveform_sample_rate_hz(void)
+static int16_t clamp_i16_from_float(float value)
 {
-	return CONFIG_AUDIO_SAMPLE_RATE_HZ > 0 ? CONFIG_AUDIO_SAMPLE_RATE_HZ :
-						 AUDIO_WAVEFORM_DEFAULT_SAMPLE_RATE_HZ;
-}
-
-static void waveform_configure_window(void)
-{
-	const uint32_t sample_rate = waveform_sample_rate_hz();
-	uint32_t target_frames;
-	uint32_t target_points;
-
-	switch (window_mode) {
-	case 1:
-		target_frames = sample_rate / 100U; /* 10 ms */
-		target_points = target_frames;
-		break;
-	case 2:
-		target_frames = sample_rate / 20U; /* 50 ms */
-		target_points = AUDIO_WAVEFORM_MAX_PLOT_POINTS;
-		break;
-	case 3:
-		target_frames = sample_rate / 10U; /* 100 ms */
-		target_points = AUDIO_WAVEFORM_MAX_PLOT_POINTS;
-		break;
-	case 0:
-	default:
-		target_frames = AUDIO_WAVEFORM_SAMPLES_PER_PACKET; /* 2 ms at 48 kHz */
-		target_points = AUDIO_WAVEFORM_SAMPLES_PER_PACKET;
-		break;
+	if (value > 32767.0f) {
+		return INT16_MAX;
 	}
 
-	target_frames = CLAMP(target_frames, 1U, UINT16_MAX);
-	target_points = CLAMP(target_points, 1U, AUDIO_WAVEFORM_MAX_PLOT_POINTS);
-	target_points = MIN(target_points, target_frames);
+	if (value < -32768.0f) {
+		return INT16_MIN;
+	}
 
-	scope_decimation = MAX(1U, target_frames / target_points);
-	scope_target_points = (uint16_t)(target_frames / scope_decimation);
-	scope_target_points = MIN(scope_target_points, AUDIO_WAVEFORM_MAX_PLOT_POINTS);
-	scope_target_frames = (uint16_t)(scope_target_points * scope_decimation);
+	return (int16_t)(value >= 0.0f ? value + 0.5f : value - 0.5f);
 }
 
-static void waveform_reset_capture(bool reset_sequence)
+static void stream_cache_reset(bool reset_sequence)
 {
-	scope_capture_active = false;
-	scope_point_count = 0;
-	scope_frame_count = 0;
-	decimation_sum = 0;
-	decimation_count = 0;
-	source_block_count = 0;
-	k_msgq_purge(&audio_waveform_queue);
+	k_spinlock_key_t key = k_spin_lock(&stream_lock);
+
+	mic_read_idx = 0;
+	mic_write_idx = 0;
+	mic_count = 0;
+	thermal_read_idx = 0;
+	thermal_write_idx = 0;
+	thermal_count = 0;
+	imu_pending = false;
+
+	memset(&latest_packet, 0, sizeof(latest_packet));
 
 	if (reset_sequence) {
 		sequence = 0;
-		window_id++;
 	}
+
+	k_spin_unlock(&stream_lock, key);
 }
 
-static void waveform_begin_capture(void)
+static void mic_ring_push(int16_t sample)
 {
-	waveform_configure_window();
-	scope_capture_active = true;
-	scope_point_count = 0;
-	scope_frame_count = 0;
-	scope_sum_abs_l = 0;
-	scope_sum_abs_r = 0;
-	scope_peak_l = 0;
-	scope_peak_r = 0;
-	scope_min_mono = INT16_MAX;
-	scope_max_mono = INT16_MIN;
-	decimation_sum = 0;
-	decimation_count = 0;
-	window_id++;
-}
-
-static int waveform_queue_scope_packets(void)
-{
-	struct audio_waveform_packet packet;
-	const uint16_t mean_l = scope_frame_count > 0 ?
-				(uint16_t)(scope_sum_abs_l / scope_frame_count) : 0;
-	const uint16_t mean_r = scope_frame_count > 0 ?
-				(uint16_t)(scope_sum_abs_r / scope_frame_count) : 0;
-	const int32_t peak_to_peak = (int32_t)scope_max_mono - (int32_t)scope_min_mono;
-	const uint16_t p2p = peak_to_peak > UINT16_MAX ? UINT16_MAX : (uint16_t)peak_to_peak;
-	uint16_t offset = 0;
-	int ret = 0;
-
-	k_msgq_purge(&audio_waveform_queue);
-
-	while (offset < scope_point_count) {
-		const uint16_t chunk_count = MIN(AUDIO_WAVEFORM_SAMPLES_PER_PACKET,
-						scope_point_count - offset);
-
-		memset(&packet, 0, sizeof(packet));
-		packet.sequence = sequence++;
-		packet.sample_rate_hz = waveform_sample_rate_hz();
-		packet.frame_count = scope_target_frames;
-		packet.peak_l = scope_peak_l;
-		packet.peak_r = scope_peak_r;
-		packet.mean_abs_l = mean_l;
-		packet.mean_abs_r = mean_r;
-		packet.sample_count = (uint8_t)chunk_count;
-		packet.sample_format = AUDIO_WAVEFORM_SAMPLE_FORMAT_PCM16;
-		packet.window_id = window_id;
-		packet.sample_offset = offset;
-		packet.total_sample_count = scope_point_count;
-		packet.decimation = scope_decimation;
-		memcpy(packet.samples, &scope_points[offset], chunk_count * sizeof(packet.samples[0]));
-		packet.min_mono = scope_min_mono;
-		packet.max_mono = scope_max_mono;
-		packet.peak_to_peak_mono = p2p;
-
-		ret = k_msgq_put(&audio_waveform_queue, &packet, K_NO_WAIT);
-		if (ret != 0) {
-			return ret;
+	if (mic_count == AUDIO_TDM_MIC_RING_SAMPLES) {
+		mic_read_idx = (mic_read_idx + 1U) % AUDIO_TDM_MIC_RING_SAMPLES;
+		mic_count--;
+		dropped_mic_samples++;
+		if (dropped_mic_samples >= AUDIO_WAVEFORM_MIC_SAMPLES_PER_PACKET) {
+			sequence++;
+			dropped_mic_samples -= AUDIO_WAVEFORM_MIC_SAMPLES_PER_PACKET;
 		}
-
-		offset += chunk_count;
 	}
 
-	return ret;
+	mic_ring[mic_write_idx] = sample;
+	mic_write_idx = (mic_write_idx + 1U) % AUDIO_TDM_MIC_RING_SAMPLES;
+	mic_count++;
+}
+
+static uint8_t mic_ring_copy_payload(uint8_t *payload)
+{
+	const uint16_t samples_to_copy =
+		MIN((uint16_t)AUDIO_WAVEFORM_MIC_SAMPLES_PER_PACKET, mic_count);
+
+	for (uint16_t i = 0; i < samples_to_copy; i++) {
+		const uint16_t idx =
+			(mic_read_idx + i) % AUDIO_TDM_MIC_RING_SAMPLES;
+		const int16_t sample = mic_ring[idx];
+
+		sys_put_le16((uint16_t)sample, &payload[i * sizeof(int16_t)]);
+	}
+
+	return (uint8_t)(samples_to_copy * sizeof(int16_t));
+}
+
+static void mic_ring_advance_payload(uint8_t valid_len)
+{
+	const uint16_t samples_consumed = valid_len / sizeof(int16_t);
+
+	for (uint16_t i = 0; i < samples_consumed; i++) {
+		mic_read_idx = (mic_read_idx + 1U) % AUDIO_TDM_MIC_RING_SAMPLES;
+		mic_count--;
+	}
+}
+
+static bool thermal_row_pop(uint8_t *payload, uint8_t *row_index)
+{
+	if (thermal_count == 0U) {
+		return false;
+	}
+
+	memcpy(payload, thermal_rows[thermal_read_idx], AUDIO_WAVEFORM_THERMAL_PAYLOAD_SIZE);
+	if (row_index != NULL) {
+		*row_index = thermal_row_indices[thermal_read_idx];
+	}
+	thermal_read_idx = (thermal_read_idx + 1U) % AUDIO_TDM_THERMAL_QUEUE_DEPTH;
+	thermal_count--;
+
+	return true;
+}
+
+static void packet_build(struct audio_waveform_packet *packet)
+{
+	k_spinlock_key_t key;
+
+	memset(packet, 0, sizeof(*packet));
+
+	key = k_spin_lock(&stream_lock);
+
+	packet->seq = sequence++;
+	sys_put_be32(k_uptime_get_32(), packet->timestamp_be);
+
+	packet->mic_valid_len = mic_ring_copy_payload(packet->mic_payload);
+
+	packet->thermal_row_index = 0xffU;
+	if (thermal_row_pop(packet->thermal_payload, &packet->thermal_row_index)) {
+		packet->thermal_valid_len = AUDIO_WAVEFORM_THERMAL_PAYLOAD_SIZE;
+	}
+
+	if (imu_pending) {
+		memcpy(packet->imu_payload, imu_payload, sizeof(packet->imu_payload));
+		packet->imu_valid_len = AUDIO_WAVEFORM_IMU_PAYLOAD_SIZE;
+		imu_pending = false;
+	}
+
+	memcpy(&latest_packet, packet, sizeof(latest_packet));
+
+	k_spin_unlock(&stream_lock, key);
 }
 
 static ssize_t read_control(struct bt_conn *conn,
@@ -211,17 +224,25 @@ static ssize_t write_control(struct bt_conn *conn,
 
 	control_value = *(const uint8_t *)buf;
 	capture_enabled = (control_value & AUDIO_WAVEFORM_CONTROL_ENABLE) != 0;
-	window_mode = (control_value & AUDIO_WAVEFORM_CONTROL_WINDOW_MASK) >>
-		      AUDIO_WAVEFORM_CONTROL_WINDOW_SHIFT;
-	waveform_configure_window();
 
 	if ((control_value & AUDIO_WAVEFORM_CONTROL_RESET) != 0) {
-		waveform_reset_capture(true);
+		stream_cache_reset(true);
 	}
 
-	LOG_INF("Audio waveform preview %s mode=%u frames=%u points=%u decim=%u",
-		capture_enabled ? "enabled" : "disabled", window_mode,
-		scope_target_frames, scope_target_points, scope_decimation);
+	if (capture_enabled && notify_enabled) {
+		k_timer_start(&tdm_tick_timer, K_MSEC(AUDIO_WAVEFORM_PERIOD_MS),
+			      K_MSEC(AUDIO_WAVEFORM_PERIOD_MS));
+	} else {
+		k_timer_stop(&tdm_tick_timer);
+	}
+
+	LOG_INF("Audio TDM stream %s period=%ums packet=%uB mic=%uB thermal=%uB imu=%uB",
+		capture_enabled ? "enabled" : "disabled",
+		AUDIO_WAVEFORM_PERIOD_MS, AUDIO_WAVEFORM_PACKET_SIZE,
+		AUDIO_WAVEFORM_MIC_PAYLOAD_SIZE,
+		AUDIO_WAVEFORM_THERMAL_PAYLOAD_SIZE,
+		AUDIO_WAVEFORM_IMU_PAYLOAD_SIZE);
+
 	return len;
 }
 
@@ -238,11 +259,17 @@ static ssize_t read_waveform(struct bt_conn *conn,
 static void waveform_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
 	notify_enabled = (value == BT_GATT_CCC_NOTIFY);
-	LOG_INF("Audio waveform notifications %s", notify_enabled ? "enabled" : "disabled");
+	LOG_INF("Audio TDM notifications %s", notify_enabled ? "enabled" : "disabled");
+
+	if (notify_enabled && capture_enabled) {
+		k_timer_start(&tdm_tick_timer, K_MSEC(AUDIO_WAVEFORM_PERIOD_MS),
+			      K_MSEC(AUDIO_WAVEFORM_PERIOD_MS));
+	} else {
+		k_timer_stop(&tdm_tick_timer);
+	}
 
 	if (!notify_enabled) {
-		k_msgq_purge(&audio_waveform_queue);
-		scope_capture_active = false;
+		stream_cache_reset(false);
 	}
 }
 
@@ -261,104 +288,160 @@ BT_GATT_CCC(waveform_ccc_cfg_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
 
 int audio_waveform_service_submit_i2s_block(const int16_t *samples, size_t frame_count)
 {
-	if (!capture_enabled || !notify_enabled) {
+	if (!capture_enabled || !notify_enabled || !mic_stream_enabled) {
 		return -EACCES;
 	}
 
-	if ((samples == NULL) || (frame_count == 0)) {
+	if ((samples == NULL) || (frame_count == 0U)) {
 		return -EINVAL;
 	}
 
-	source_block_count++;
-
-	if (!scope_capture_active) {
-		if ((source_block_count % AUDIO_WAVEFORM_NOTIFY_DIVISOR) != 0) {
-			return 0;
-		}
-
-		waveform_begin_capture();
-	}
+	k_spinlock_key_t key = k_spin_lock(&stream_lock);
 
 	for (size_t i = 0; i < frame_count; i++) {
-		const int16_t left = samples[i * 2];
-		const int16_t right = samples[(i * 2) + 1];
-		const uint16_t abs_l = abs_i16_u16(left);
-		const uint16_t abs_r = abs_i16_u16(right);
-		const int32_t mono = ((int32_t)left + (int32_t)right) / 2;
-
-		scope_min_mono = MIN(scope_min_mono, (int16_t)mono);
-		scope_max_mono = MAX(scope_max_mono, (int16_t)mono);
-		scope_sum_abs_l += abs_l;
-		scope_sum_abs_r += abs_r;
-		scope_peak_l = MAX(scope_peak_l, abs_l);
-		scope_peak_r = MAX(scope_peak_r, abs_r);
-
-		decimation_sum += mono;
-		decimation_count++;
-		scope_frame_count++;
-
-		if (decimation_count >= scope_decimation &&
-		    scope_point_count < scope_target_points) {
-			scope_points[scope_point_count++] =
-				(int16_t)(decimation_sum / decimation_count);
-			decimation_sum = 0;
-			decimation_count = 0;
-		}
-
-		if (scope_frame_count >= scope_target_frames ||
-		    scope_point_count >= scope_target_points) {
-			scope_capture_active = false;
-			return waveform_queue_scope_packets();
-		}
+		/* The fixed BLE TDM packet has one mono PCM slot. Use the left
+		 * I2S channel here so the 16 kHz payload remains continuous.
+		 */
+		mic_ring_push(samples[i * 2U]);
 	}
+
+	k_spin_unlock(&stream_lock, key);
 
 	return 0;
 }
 
-static void audio_waveform_notify_thread(void *arg1, void *arg2, void *arg3)
+void audio_waveform_service_set_mic_enabled(bool enabled)
 {
-	int ret;
+	k_spinlock_key_t key = k_spin_lock(&stream_lock);
+
+	mic_stream_enabled = enabled;
+	if (!enabled) {
+		mic_read_idx = 0;
+		mic_write_idx = 0;
+		mic_count = 0;
+	}
+
+	k_spin_unlock(&stream_lock, key);
+}
+
+void audio_waveform_service_submit_imu_sample(const float accel_mps2[3],
+					      const float gyro_dps[3],
+					      const float mag_ut[3])
+{
+	if ((accel_mps2 == NULL) || (gyro_dps == NULL) || (mag_ut == NULL)) {
+		return;
+	}
+
+	int16_t scaled[9];
+
+	for (size_t i = 0; i < 3U; i++) {
+		scaled[i] = clamp_i16_from_float(accel_mps2[i] * (1000.0f / 9.80665f));
+		scaled[i + 3U] = clamp_i16_from_float(gyro_dps[i] * 10.0f);
+		scaled[i + 6U] = clamp_i16_from_float(mag_ut[i] * 10.0f);
+	}
+
+	k_spinlock_key_t key = k_spin_lock(&stream_lock);
+
+	for (size_t i = 0; i < ARRAY_SIZE(scaled); i++) {
+		sys_put_le16((uint16_t)scaled[i], &imu_payload[i * sizeof(int16_t)]);
+	}
+
+	imu_pending = true;
+
+	k_spin_unlock(&stream_lock, key);
+}
+
+void audio_waveform_service_submit_thermal_row(const int16_t *row_pixels,
+					       size_t pixel_count,
+					       uint8_t row_index)
+{
+	if ((row_pixels == NULL) ||
+	    (pixel_count < AUDIO_WAVEFORM_THERMAL_PIXELS_PER_ROW)) {
+		return;
+	}
+
+	k_spinlock_key_t key = k_spin_lock(&stream_lock);
+
+	if (row_index == 0U) {
+		thermal_read_idx = 0;
+		thermal_write_idx = 0;
+		thermal_count = 0;
+	}
+
+	if (thermal_count == AUDIO_TDM_THERMAL_QUEUE_DEPTH) {
+		thermal_read_idx = (thermal_read_idx + 1U) % AUDIO_TDM_THERMAL_QUEUE_DEPTH;
+		thermal_count--;
+	}
+
+	for (size_t i = 0; i < AUDIO_WAVEFORM_THERMAL_PIXELS_PER_ROW; i++) {
+		sys_put_be16((uint16_t)row_pixels[i],
+			     &thermal_rows[thermal_write_idx][i * sizeof(int16_t)]);
+	}
+
+	thermal_row_indices[thermal_write_idx] = row_index;
+	thermal_write_idx = (thermal_write_idx + 1U) % AUDIO_TDM_THERMAL_QUEUE_DEPTH;
+	thermal_count++;
+
+	k_spin_unlock(&stream_lock, key);
+}
+
+static void audio_tdm_notify_thread(void *arg1, void *arg2, void *arg3)
+{
 	static int last_notify_error;
 	struct audio_waveform_packet packet;
+	uint8_t mic_valid_len;
 
 	ARG_UNUSED(arg1);
 	ARG_UNUSED(arg2);
 	ARG_UNUSED(arg3);
 
 	while (1) {
-		ret = k_msgq_get(&audio_waveform_queue, &packet, K_FOREVER);
-		if (ret != 0) {
+		k_sem_take(&tdm_tick_sem, K_FOREVER);
+
+		if (!capture_enabled || !notify_enabled) {
 			continue;
 		}
 
-		memcpy(&latest_packet, &packet, sizeof(latest_packet));
+		packet_build(&packet);
+		mic_valid_len = packet.mic_valid_len;
 
-		if (!notify_enabled) {
+		if (mic_valid_len == 0U) {
 			continue;
 		}
 
-		ret = bt_gatt_notify(NULL, &audio_waveform_service.attrs[4], &packet,
-				     sizeof(packet));
+retry_notify:
+		int ret = bt_gatt_notify(NULL, &audio_waveform_service.attrs[4], &packet,
+					 sizeof(packet));
+		if (ret == -ENOMEM) {
+			k_sleep(K_MSEC(5));
+			goto retry_notify;
+		}
+
 		if (ret == 0) {
 			last_notify_error = 0;
+			k_spinlock_key_t key = k_spin_lock(&stream_lock);
+			mic_ring_advance_payload(mic_valid_len);
+			k_spin_unlock(&stream_lock, key);
 		} else if ((ret != -ENOTCONN) && (ret != last_notify_error)) {
 			last_notify_error = ret;
-			LOG_WRN("Audio waveform notify failed: %d", ret);
+			LOG_WRN("Audio TDM notify failed: %d", ret);
 		}
 	}
 }
 
 static int audio_waveform_service_init(void)
 {
-	k_tid_t thread_id = k_thread_create(&audio_waveform_thread_data,
-					    audio_waveform_thread_stack,
-					    AUDIO_WAVEFORM_THREAD_STACK_SIZE,
-					    audio_waveform_notify_thread,
+	k_sem_init(&tdm_tick_sem, 0, 100);
+
+	k_tid_t thread_id = k_thread_create(&audio_tdm_thread_data,
+					    audio_tdm_thread_stack,
+					    AUDIO_TDM_THREAD_STACK_SIZE,
+					    audio_tdm_notify_thread,
 					    NULL, NULL, NULL,
-					    K_PRIO_PREEMPT(AUDIO_WAVEFORM_THREAD_PRIORITY),
+					    K_PRIO_PREEMPT(AUDIO_TDM_THREAD_PRIORITY),
 					    0, K_NO_WAIT);
 
-	(void)k_thread_name_set(thread_id, "AUDIO_WAVE_BLE");
+	(void)k_thread_name_set(thread_id, "AUDIO_TDM_BLE");
 	return 0;
 }
 

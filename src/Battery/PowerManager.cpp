@@ -92,6 +92,37 @@ ZBUS_CHAN_DEFINE(battery_chan, struct battery_data, NULL, NULL, ZBUS_OBSERVERS_E
 
 static struct battery_data msg;
 
+static k_work_delayable error_led_breathe_work;
+static bool error_led_breathe_active;
+static bool error_led_breathe_level;
+
+static void error_led_breathe_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	if (!error_led_breathe_active || !battery_controller.power_connected()) {
+		gpio_pin_set_dt(&power_manager.error_led, 0);
+		return;
+	}
+
+	error_led_breathe_level = !error_led_breathe_level;
+	gpio_pin_set_dt(&power_manager.error_led, error_led_breathe_level ? 1 : 0);
+	k_work_schedule(&error_led_breathe_work, K_MSEC(600));
+}
+
+static void error_led_breathe_start(void)
+{
+	error_led_breathe_active = true;
+	k_work_schedule(&error_led_breathe_work, K_NO_WAIT);
+}
+
+static void error_led_breathe_stop(void)
+{
+	error_led_breathe_active = false;
+	k_work_cancel_delayable(&error_led_breathe_work);
+	power_manager.set_error_led(0);
+}
+
 //LoadSwitch PowerManager::v1_8_switch(GPIO_DT_SPEC_GET(DT_NODELABEL(load_switch), gpios));
 
 void PowerManager::fuel_gauge_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
@@ -110,8 +141,15 @@ void PowerManager::power_good_callback(const struct device *dev, struct gpio_cal
 
     if (power_good) {
         power_manager.last_charging_state = 0;
+        power_manager.set_error_led(0);
+        battery_controller.exit_high_impedance();
+        power_manager.check_battery();
+        battery_controller.enable_charge();
+        battery_controller.enter_high_impedance();
+        error_led_breathe_start();
         k_work_schedule(&charge_ctrl_delayable, K_NO_WAIT);
     } else {
+        error_led_breathe_stop();
         k_work_cancel_delayable(&charge_ctrl_delayable);
         if (!power_manager.power_on) k_work_reschedule(&power_manager.power_down_work, K_NO_WAIT);
     }
@@ -399,6 +437,7 @@ int PowerManager::begin() {
         oe_state.charging_state = POWER_CONNECTED;
 
         state_indicator.init(oe_state);
+        error_led_breathe_start();
 
         k_work_schedule(&charge_ctrl_delayable, K_NO_WAIT);
 
@@ -475,7 +514,6 @@ int PowerManager::begin() {
         if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
             LOG_WRN("Fuel gauge design capacity still mismatched after forced setup: %.3f",
                     design_capacity);
-            set_error_led();
         }
     } else if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
         if (IS_ENABLED(CONFIG_OPENEARABLE_ADAU_I2C_TEST_SKIP_FUEL_GAUGE_SETUP)) {
@@ -487,7 +525,6 @@ int PowerManager::begin() {
             if (fabsf(design_capacity - _battery_settings.capacity) > 1.0f) {
                 LOG_WRN("Fuel gauge design capacity still mismatched after setup: %.3f",
                         design_capacity);
-                set_error_led();
             }
         }
     }
@@ -510,6 +547,11 @@ int PowerManager::begin() {
 #endif
 
     state_indicator.init(oe_state);
+
+    k_work_init_delayable(&error_led_breathe_work, error_led_breathe_handler);
+    if (battery_controller.power_connected()) {
+        error_led_breathe_start();
+    }
 
     uint32_t device_id[2];
 
@@ -751,8 +793,11 @@ void PowerManager::charge_task() {
 
     if (last_charging_state == 0) {
         LOG_INF("Setting up charge controller ........");
+        battery_controller.exit_high_impedance();
         battery_controller.setup(_battery_settings);
+        check_battery();
         battery_controller.enable_charge();
+        battery_controller.enter_high_impedance();
     }
 
     //if (last_charging_state != charging_state ||  ) {

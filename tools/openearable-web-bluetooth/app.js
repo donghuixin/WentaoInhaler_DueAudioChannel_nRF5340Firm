@@ -2113,6 +2113,8 @@ function decodeTdmStreamPacket(value) {
         if (els.bleLogDropped) els.bleLogDropped.textContent = String(bleLogDroppedCount);
       }
       bleLogAudioBuffer.push({ timestamp_ms: timestampMs, samples: micSamples, dropped_packets: droppedNow });
+      if (els.bleLogAudioCount) els.bleLogAudioCount.textContent = String(bleLogAudioBuffer.length);
+    }
 
     drawAudioWaveform(lastAudioSamples, {
       peak,

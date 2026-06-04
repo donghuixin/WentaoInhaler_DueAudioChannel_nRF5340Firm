@@ -101,12 +101,12 @@ static void error_led_breathe_handler(struct k_work *work)
 	ARG_UNUSED(work);
 
 	if (!error_led_breathe_active || !battery_controller.power_connected()) {
-		gpio_pin_set_dt(&power_manager.error_led, 0);
+		power_manager.set_error_led(0);
 		return;
 	}
 
 	error_led_breathe_level = !error_led_breathe_level;
-	gpio_pin_set_dt(&power_manager.error_led, error_led_breathe_level ? 1 : 0);
+	power_manager.set_error_led(error_led_breathe_level ? 1 : 0);
 	k_work_schedule(&error_led_breathe_work, K_MSEC(600));
 }
 

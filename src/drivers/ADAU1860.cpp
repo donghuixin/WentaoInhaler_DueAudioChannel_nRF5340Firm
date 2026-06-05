@@ -1,8 +1,10 @@
 #include "ADAU1860.h"
+#include "../modules/hw_codec.h"
 #include "zbus_common.h"
 #include "openearable_common.h"
 #include <math.h>
 
+#include <zephyr/sys/util.h>
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(ADAU1860, 3);
@@ -176,8 +178,9 @@ int ADAU1860::begin() {
                 uint8_t asrc_pwr = 0x31; // ASRCO1_EN | ASRCO0_EN | ASRCI0_EN 
                 writeReg(registers::ASRC_PWR, &asrc_pwr, sizeof(asrc_pwr));
 
-                // DMIC_CTRL - reset val (32 BCLKs?)
-                uint8_t dmic_pwr = 0x03; // DMIC Channel 0 & 1
+                // Default to MP1/DMIC1 only. Runtime mic select can switch
+                // to MP2 DMIC23 left/right through the audio config service.
+                uint8_t dmic_pwr = 0x01; // DMIC Channel 0
                 writeReg(registers::DMIC_PWR, &dmic_pwr, sizeof(dmic_pwr));
 
                 // SPT0_ROUTE0 - i2s output route
@@ -220,16 +223,27 @@ int ADAU1860::begin() {
                 uint8_t spt0_route1 = 33; // ASCRO 1
                 writeReg(registers::SPT0_ROUTE1, &spt0_route1, sizeof(spt0_route1));
 
-                // DMIC_VOL0
-                uint8_t dmic_vol = 0x20; // 12dB
+                // Keep digital mic gain conservative by default. The previous
+                // 0x20 value was about +12 dB and can lift the noise floor.
+                uint8_t dmic_vol = HW_CODEC_DMIC_GAIN_DEFAULT;
                 writeReg(registers::DMIC_VOL0, &dmic_vol, sizeof(dmic_vol));
                 writeReg(registers::DMIC_VOL1, &dmic_vol, sizeof(dmic_vol));
+                writeReg(registers::DMIC_VOL2, &dmic_vol, sizeof(dmic_vol));
+                writeReg(registers::DMIC_VOL3, &dmic_vol, sizeof(dmic_vol));
+
+                uint8_t dmic_mutes = 0x0E; // mute unused DMIC1/2/3 at boot
+                writeReg(registers::DMIC_MUTES, &dmic_mutes, sizeof(dmic_mutes));
 
                 uint8_t dmic_ctrl1 = 0x34; // ... | 6.144 MHz
                 writeReg(registers::DMIC_CTRL1, &dmic_ctrl1, sizeof(dmic_ctrl1));
 
                 uint8_t dmic_ctrl2 = 0x04; // 192kHz
                 writeReg(registers::DMIC_CTRL2, &dmic_ctrl2, sizeof(dmic_ctrl2));
+
+                uint8_t dmic_ctrl3 = 0x04; // 192kHz for DMIC23
+                writeReg(registers::DMIC_CTRL3, &dmic_ctrl3, sizeof(dmic_ctrl3));
+
+                set_mic_select(HW_CODEC_MIC_MP1_DMIC1);
         } else {
                 LOG_WRN("ADAU path off bi=%d dev=%d",
                         IS_ENABLED(CONFIG_STREAM_BIDIRECTIONAL), CONFIG_AUDIO_DEV);
@@ -528,6 +542,85 @@ int ADAU1860::set_volume(uint8_t volume) {
 
         return 0;
 #endif
+}
+
+int ADAU1860::set_dmic_gain(uint8_t gain_reg)
+{
+        if (gain_reg > HW_CODEC_DMIC_GAIN_MAX) {
+                gain_reg = HW_CODEC_DMIC_GAIN_MAX;
+        }
+
+        writeReg(registers::DMIC_VOL0, &gain_reg, sizeof(gain_reg));
+        writeReg(registers::DMIC_VOL1, &gain_reg, sizeof(gain_reg));
+        writeReg(registers::DMIC_VOL2, &gain_reg, sizeof(gain_reg));
+        writeReg(registers::DMIC_VOL3, &gain_reg, sizeof(gain_reg));
+
+        LOG_INF("ADAU DMIC gain register set to 0x%02x", gain_reg);
+        return 0;
+}
+
+int ADAU1860::set_mic_select(uint8_t mic_mask)
+{
+        struct mic_route {
+                uint8_t mask;
+                uint8_t source;
+                uint8_t power_bit;
+                const char *name;
+        };
+
+        static const mic_route routes[] = {
+                {HW_CODEC_MIC_MP1_DMIC1,       39, 0x01, "MP1_DMIC1"},
+                {HW_CODEC_MIC_MP2_DMIC23_LEFT, 41, 0x04, "MP2_DMIC23_L"},
+                {HW_CODEC_MIC_MP2_DMIC23_RIGHT, 42, 0x08, "MP2_DMIC23_R"},
+        };
+
+        uint8_t selected_sources[2] = {routes[0].source, routes[0].source};
+        uint8_t dmic_pwr = 0;
+        uint8_t selected_count = 0;
+        uint8_t route_count = 0;
+
+        mic_mask &= HW_CODEC_MIC_MASK_VALID;
+        if (mic_mask == 0U) {
+                mic_mask = HW_CODEC_MIC_MP1_DMIC1;
+        }
+
+        for (size_t i = 0; i < ARRAY_SIZE(routes); i++) {
+                if ((mic_mask & routes[i].mask) == 0U) {
+                        continue;
+                }
+
+                selected_count++;
+                if (route_count < ARRAY_SIZE(selected_sources)) {
+                        selected_sources[route_count++] = routes[i].source;
+                        dmic_pwr |= routes[i].power_bit;
+                } else {
+                        LOG_WRN("ADAU mic %s selected but not routed; I2S has only two slots",
+                                routes[i].name);
+                }
+        }
+
+        if (route_count == 0U) {
+                route_count = 1U;
+                selected_sources[0] = routes[0].source;
+                selected_sources[1] = routes[0].source;
+                dmic_pwr = routes[0].power_bit;
+        } else if (route_count == 1U) {
+                selected_sources[1] = selected_sources[0];
+        }
+
+        uint8_t fdec_route0 = selected_sources[0];
+        uint8_t fdec_route1 = selected_sources[1];
+        writeReg(registers::DMIC_PWR, &dmic_pwr, sizeof(dmic_pwr));
+        writeReg(registers::FDEC_ROUTE0, &fdec_route0, sizeof(fdec_route0));
+        writeReg(registers::FDEC_ROUTE1, &fdec_route1, sizeof(fdec_route1));
+
+        uint8_t dmic_mutes = (uint8_t)(~dmic_pwr & 0x0F);
+        writeReg(registers::DMIC_MUTES, &dmic_mutes, sizeof(dmic_mutes));
+
+        LOG_INF("ADAU mic mask=0x%02x selected=%u routed=%u dmic_pwr=0x%02x route=%u/%u",
+                mic_mask, selected_count, route_count, dmic_pwr,
+                selected_sources[0], selected_sources[1]);
+        return 0;
 }
 
 

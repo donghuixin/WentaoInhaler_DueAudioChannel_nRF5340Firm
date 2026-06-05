@@ -52,7 +52,7 @@ The BMM150 magnetometer is connected behind the BMI270 auxiliary interface:
 | SDI | ASDx |
 | SCK | ASCx |
 
-The firmware enables the BMI270 auxiliary I2C path, sets its auxiliary read cadence to the selected IMU cadence, and appends magnetometer values after accelerometer and gyroscope values in both BLE TDM and SD IMU records. The BMM150 internal ODR table tops out at 30 Hz, so requests above that keep the BMI270 auxiliary slot synchronized to the IMU timer while the magnetometer reports the latest available BMM150 sample.
+The firmware enables the BMI270 auxiliary I2C path, sets its auxiliary read cadence to the selected IMU cadence, and appends magnetometer values after accelerometer and gyroscope values in both BLE Sensor Data and SD IMU records. The BMM150 internal ODR table tops out at 30 Hz, so requests above that keep the BMI270 auxiliary slot synchronized to the IMU timer while the magnetometer reports the latest available BMM150 sample.
 
 ## Sensor Configuration Packet
 
@@ -68,13 +68,13 @@ offset  size  field
 `storageOptions` bits:
 
 ```text
-0x01 DATA_STREAMING  send live BLE sensor/TDM data
+0x01 DATA_STREAMING  send live BLE sensor/audio data
 0x02 DATA_STORAGE    record to SD
 0x10 AUDIO_LEFT      SD audio left channel
 0x20 AUDIO_RIGHT     SD audio right channel
 ```
 
-When SD logging is selected from the Web console, BLE is used for control commands only; sensor data notifications and audio TDM notifications are stopped before storage configs are written.
+When SD logging is selected from the Web console, BLE is used for control commands only; Sensor Data and Audio PCM notifications are stopped before storage configs are written.
 
 ## Generic Sensor Data Packet
 
@@ -108,11 +108,57 @@ float32 mag_z_uT
 
 Total payload: 36 bytes. Magnetometer data is placed immediately after gyro data.
 
+### Shared Sensor Stream BLE Payload
+
+Live BLE IR and IMU data use one shared `Sensor Stream` characteristic. The
+firmware always drains pending IR packets before IMU packets. This lowers IMU
+transport priority without lowering its 100 Hz acquisition rate.
+
+```text
+UUID: 34c2e3c1-34aa-11eb-adc1-0242ac120002
+
+offset  size     common field
+0       8        frame timestamp_us, little-endian
+8       2        sequence, little-endian
+10      1        packet_type: 1=Thermal IR, 2=IMU batch
+11      1        item_count
+12      2        item_offset, little-endian
+14      1        packet_index
+15      1        packet_count
+16      variable payload
+```
+
+Thermal IR (`packet_type=1`) uses the frame capture timestamp and sequence.
+`item_count` is the number of pixels and `item_offset` is their offset in the
+32 x 24 image. Each packet carries at most 114 int16 pixels, so a complete
+768-pixel frame uses seven notifications: six packets of 114 pixels and one
+packet of 84 pixels. The maximum value is 244 bytes and fits one negotiated
+251-byte Link Layer Data Length PDU.
+
+The firmware spaces the seven notifications across the 125 ms frame period instead of injecting a 48-notification burst. At 8 Hz this is 56 IR notifications/s.
+
+Temperature conversion:
+
+```text
+temperature_celsius = raw / 50.0
+```
+
+IMU (`packet_type=2`) batches five 9-axis samples into one notification.
+`timestamp_us` is the first sample time, and each 40-byte sample record is:
+
+```text
+uint32 timestamp_delta_us
+float32 accel_x, accel_y, accel_z
+float32 gyro_x, gyro_y, gyro_z
+float32 mag_x, mag_y, mag_z
+```
+
+At 100 Hz this produces 20 IMU notifications/s while preserving all five
+individual timestamps and samples. A full IMU batch is 216 bytes.
+
 ### Thermal IR SD Payload
 
-Sensor ID: `8`
-
-The MLX90642 32 x 24 frame is stored in 48 half-row chunks. Each chunk stays inside the fixed 38-byte payload:
+SD logging retains the 48 half-row records used by the IR CSV writer:
 
 ```text
 offset  size  field
@@ -121,40 +167,90 @@ offset  size  field
 2       32    int16 raw pixels, little-endian
 ```
 
-Temperature conversion:
+## BLE Audio PCM Packet
 
-```text
-temperature_celsius = raw / 50.0
-```
+Audio uses the Audio Waveform Service data characteristic. IMU and Thermal IR
+share the Sensor Stream characteristic described above. The streams remain
+independent records with their own capture timestamps.
 
-## BLE TDM Composite Packet
-
-Live audio, thermal rows, and IMU preview values are multiplexed through the Audio Waveform Service data characteristic.
-
-Packet size: 251 bytes.
+Characteristic value size: 244 bytes. With the 3-byte ATT notification header and 4-byte L2CAP header, the Link Layer payload is exactly 251 bytes and fits one negotiated Data Length Extension PDU.
 
 ```text
 offset  size  field
-0       1     seq
-1       4     uptime_ms, big-endian
-5       1     mic_valid_len
-6       160   mono PCM16 little-endian, left channel, up to 80 samples
-166     1     thermal_valid_len
-167     1     thermal_row_index, 0..23, or 0xff when empty
-168     64    thermal row, 32 x int16 big-endian raw pixels
-232     1     imu_valid_len
-233     18    IMU preview, 9 x int16 little-endian
+0       4     first_sample_timestamp_us, little-endian uint32
+4       240   120 mono PCM16 samples, little-endian
 ```
 
-IMU preview scaling:
+The timestamp is captured from the I2S clock for the first PCM sample, not from the BLE notification timer. At 16 kHz, 120 samples represent exactly 7.5 ms. The Web console appends samples sequentially and uses timestamp deltas only to detect real missing samples.
+
+The firmware audio ring holds 64 packets:
 
 ```text
-accel_mps2 = raw * 9.80665 / 1000
-gyro_dps   = raw * 0.1
-mag_uT     = raw * 0.1
+64 packets x 120 samples = 7680 samples = 480 ms at 16 kHz
 ```
 
-Thermal row stitching is strict. The Web console starts a frame only when `thermal_row_index == 0`, then requires rows `1..23` in order. If any row is missing, duplicated, or out of order, the partial frame is dropped and the UI waits for the next row 0. This prevents the severe row-shift artifacts caused by guessing row order.
+This protects against short Windows/BLE scheduling stalls. It cannot compensate for sustained throughput below 16 kHz; a ring overflow is logged with the cumulative number of dropped PCM samples.
+
+### BLE Connection Verification
+
+The peripheral keeps its requested minimum and maximum connection interval at 7.5 ms, including after an audio underrun, and requests 251-byte LE data length plus 2M PHY. Windows is the central and may accept different values. Verify the final negotiated values from firmware logs, not only the request logs:
+
+```text
+Conn params updated: interval=6 units (7.500 ms) ... (target 7.500 ms)
+LE data len updated: TX=251 bytes/... RX=251 bytes/... (target 251 bytes)
+LE PHY updated: TX=2M RX=2M (target 2M/2M)
+ATT MTU updated: TX=... RX=... bytes (target >=247)
+```
+
+The firmware emits a warning when the accepted interval is not 7.5 ms, data length is below 251 bytes, PHY is not 2M, or ATT MTU is below 247 bytes.
+
+### BLE Logger CSV
+
+The Web BLE logger subscribes to three characteristics when required:
+
+- Audio: 244-byte Audio PCM notifications.
+- IMU: five timestamped 9-axis samples per shared Sensor Stream notification.
+- IR: shared Sensor Stream packets carrying up to 114 raw pixels, with seven packets per complete frame.
+
+The logger reuses a sensor only when its active rate already matches the selected logger rate. If an active IMU or IR stream uses another rate, the logger temporarily applies its selected rate and restores the previous configuration when recording stops. Sensors started by the logger are tracked separately and only those sensors are stopped when recording ends. Firmware drains every queued sensor configuration command, because Zephyr `k_work` submissions can coalesce when several Web Bluetooth writes arrive close together.
+
+For a new three-sensor BLE session, the Web defaults are 100 Hz IMU, 8 Hz IR,
+and 16 kHz audio. This produces approximately 209.3 notifications/s: 133.3
+audio, 20 batched IMU, and 56 IR. Visual metrics, counters, and the audio
+canvas are throttled while every Audio and IMU sample and every complete IR
+frame is retained.
+
+The downloaded CSV uses `timestamp_us` as the first column and sorts all Audio, IMU, and IR records on one device-time timeline:
+
+```text
+timestamp_us,type,format,data...
+```
+
+Audio timestamps identify the first PCM sample. IMU timestamps identify the 9-axis sample, and the CSV format field includes its configured rate. An IR row contains one verified complete 32 x 24 frame with all 768 raw pixels, its frame sequence, and configured rate. The Web rejects incomplete or misordered IR frames and reports their missing packets in the dropped counter. It also estimates missing IMU samples from timestamp gaps. Starting BLE logging resets the firmware audio ring so pre-session PCM backlog is not written ahead of IMU/IR data.
+
+## Audio Input Configuration
+
+The Audio Config Service exposes microphone routing and noise controls so the Web console can match the three physical microphones on the board.
+
+`micSelect` (`1410df97-5f68-4ebb-a7c7-5e0fb9ae7557`) is a one-byte bitmask:
+
+```text
+0x01 MP1 / ADAU1860 DMIC1
+0x02 MP2 / DMIC23 left
+0x04 MP2 / DMIC23 right
+```
+
+At least one bit must be selected. The firmware routes the first selected microphone to the I2S left slot and the second selected microphone to the I2S right slot. If only one microphone is selected, it is duplicated to both I2S slots. The current I2S and BLE preview formats carry at most two hardware slots, so selecting all three microphones powers the selected sources but only the first two are routed into the current stereo path. A true three-channel recording mode requires a wider audio transport format.
+
+`micControl` (`1410df99-5f68-4ebb-a7c7-5e0fb9ae7557`) is a three-byte payload:
+
+```text
+offset  size  field
+0       1     ADAU1860 DMIC gain register, 0x00..0x3f
+1       2     PCM noise gate threshold, little-endian uint16
+```
+
+The default gain register is `0x00`. Earlier builds configured the ADAU1860 DMIC gain register to `0x20`, which raises the input level and can also raise the audible noise floor. The software noise gate defaults to `0` (off); nonzero values zero PCM samples whose absolute value is below or equal to the threshold before BLE preview, SD logging, or encoder use.
 
 ## SD Card Data Logger
 
@@ -225,9 +321,10 @@ http://127.0.0.1:8766/
 
 Main panels:
 
-- Thermal IR Camera: live 32 x 24 view, 2/4/8 Hz BLE preview, strict row stitching.
+- Thermal IR Camera: live 32 x 24 view from seven timestamped large packets per frame.
 - Sensor Stream & IMU: generic sensor control and 9-axis IMU values.
-- Audio Waveform: 16 kHz TDM preview.
+- Audio Waveform: 16 kHz PCM preview in fixed 244-byte/7.5 ms packets, microphone selection, DMIC gain, and software noise gate control.
+- BLE Data logger: records Audio, IMU, and IR together and downloads a timestamp-sorted CSV.
 - SD card Data logger: SD-only logging control. Sensor choices include IMU, IR at 2/4/8 Hz, and audio left/right channels with `_L` and `_R` file suffixes.
 - Hardware Status: I2C/device probe status and boot/recent diagnostic log.
 

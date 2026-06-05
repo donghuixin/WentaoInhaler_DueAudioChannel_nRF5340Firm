@@ -28,40 +28,25 @@
 #define BT_UUID_AUDIO_WAVEFORM_DATA \
 	BT_UUID_DECLARE_128(BT_UUID_AUDIO_WAVEFORM_DATA_VAL)
 
-#define AUDIO_WAVEFORM_PACKET_SIZE 251U
+#define AUDIO_WAVEFORM_PACKET_SIZE 244U
 #define AUDIO_WAVEFORM_SAMPLE_RATE_HZ 16000U
-#define AUDIO_WAVEFORM_PERIOD_MS 5U
+#define AUDIO_WAVEFORM_PERIOD_US 7500U
 
-#define AUDIO_WAVEFORM_MIC_PAYLOAD_SIZE 160U
-#define AUDIO_WAVEFORM_MIC_SAMPLES_PER_PACKET 80U
-#define AUDIO_WAVEFORM_THERMAL_PAYLOAD_SIZE 64U
-#define AUDIO_WAVEFORM_THERMAL_PIXELS_PER_ROW 32U
-#define AUDIO_WAVEFORM_IMU_PAYLOAD_SIZE 18U
+#define AUDIO_WAVEFORM_MIC_PAYLOAD_SIZE 240U
+#define AUDIO_WAVEFORM_MIC_SAMPLES_PER_PACKET 120U
 
 struct audio_waveform_packet {
-	uint8_t seq;
-	uint8_t timestamp_be[4];
-	uint8_t mic_valid_len;
+	uint8_t first_sample_timestamp_us_le[4];
 	uint8_t mic_payload[AUDIO_WAVEFORM_MIC_PAYLOAD_SIZE];
-	uint8_t thermal_valid_len;
-	uint8_t thermal_row_index;
-	uint8_t thermal_payload[AUDIO_WAVEFORM_THERMAL_PAYLOAD_SIZE];
-	uint8_t imu_valid_len;
-	uint8_t imu_payload[AUDIO_WAVEFORM_IMU_PAYLOAD_SIZE];
 } __packed;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int audio_waveform_service_submit_i2s_block(const int16_t *samples, size_t frame_count);
+int audio_waveform_service_submit_i2s_block(const int16_t *samples, size_t frame_count,
+					    uint32_t first_sample_timestamp_us);
 void audio_waveform_service_set_mic_enabled(bool enabled);
-void audio_waveform_service_submit_imu_sample(const float accel_mps2[3],
-					      const float gyro_dps[3],
-					      const float mag_ut[3]);
-void audio_waveform_service_submit_thermal_row(const int16_t *row_pixels,
-					       size_t pixel_count,
-					       uint8_t row_index);
 
 #ifdef __cplusplus
 }

@@ -37,6 +37,9 @@ static struct k_thread volume_msg_sub_thread_data;
 K_THREAD_STACK_DEFINE(volume_msg_sub_thread_stack, CONFIG_VOLUME_MSG_SUB_STACK_SIZE);
 
 static enum audio_mode audio_mode;
+static uint8_t mic_select_mask = HW_CODEC_MIC_MP1_DMIC1;
+static uint8_t dmic_gain_reg = HW_CODEC_DMIC_GAIN_DEFAULT;
+static uint16_t noise_gate_threshold;
 
 static int settings_set_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg)
 {
@@ -74,6 +77,65 @@ int hw_codec_set_audio_mode(enum audio_mode mode) {
 
 enum audio_mode hw_codec_get_audio_mode() {
 	return audio_mode;
+}
+
+int hw_codec_set_mic_select(uint8_t mic_mask)
+{
+	mic_mask &= HW_CODEC_MIC_MASK_VALID;
+	if (mic_mask == 0U) {
+		mic_mask = HW_CODEC_MIC_MP1_DMIC1;
+	}
+
+	mic_select_mask = mic_mask;
+	return dac.set_mic_select(mic_select_mask);
+}
+
+uint8_t hw_codec_get_mic_select(void)
+{
+	return mic_select_mask;
+}
+
+int hw_codec_set_mic_gain(uint8_t gain_reg)
+{
+	if (gain_reg > HW_CODEC_DMIC_GAIN_MAX) {
+		gain_reg = HW_CODEC_DMIC_GAIN_MAX;
+	}
+
+	dmic_gain_reg = gain_reg;
+	return dac.set_dmic_gain(dmic_gain_reg);
+}
+
+uint8_t hw_codec_get_mic_gain(void)
+{
+	return dmic_gain_reg;
+}
+
+int hw_codec_set_noise_gate_threshold(uint16_t threshold)
+{
+	noise_gate_threshold = threshold;
+	LOG_INF("Mic software noise gate threshold set to %u", noise_gate_threshold);
+	return 0;
+}
+
+uint16_t hw_codec_get_noise_gate_threshold(void)
+{
+	return noise_gate_threshold;
+}
+
+void hw_codec_process_i2s_block(int16_t *samples, size_t frame_count)
+{
+	if ((samples == NULL) || (frame_count == 0U) || (noise_gate_threshold == 0U)) {
+		return;
+	}
+
+	for (size_t i = 0; i < frame_count * 2U; i++) {
+		int32_t sample = samples[i];
+		int32_t abs_sample = sample < 0 ? -sample : sample;
+
+		if (abs_sample <= noise_gate_threshold) {
+			samples[i] = 0;
+		}
+	}
 }
 
 /**
@@ -327,6 +389,16 @@ int hw_codec_init(void)
 	LOG_WRN("ADAU I2C test: dac.begin begin");
 	ret = dac.begin();
 	LOG_WRN("ADAU I2C test: dac.begin returned %d", ret);
+	if (ret) {
+		return ret;
+	}
+
+	ret = dac.set_dmic_gain(dmic_gain_reg);
+	if (ret) {
+		return ret;
+	}
+
+	ret = dac.set_mic_select(mic_select_mask);
 	if (ret) {
 		return ret;
 	}

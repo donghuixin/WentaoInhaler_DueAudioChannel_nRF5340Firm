@@ -1,7 +1,7 @@
 #include "IMU.h"
 
 #include "SensorManager.h"
-#include "../bluetooth/gatt_services/audio_waveform_service.h"
+#include "../bluetooth/gatt_services/sensor_service.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/zbus/zbus.h>
@@ -15,6 +15,13 @@
 LOG_MODULE_DECLARE(sensor_manager);
 
 static struct sensor_msg msg_imu;
+
+#define IMU_WORK_QUEUE_STACK_SIZE 2048U
+#define IMU_WORK_QUEUE_PRIORITY 4
+
+static struct k_work_q imu_work_q;
+static K_THREAD_STACK_DEFINE(imu_work_q_stack, IMU_WORK_QUEUE_STACK_SIZE);
+static bool imu_work_q_started;
 
 #define BMI270_NODE DT_NODELABEL(bmi270)
 static const struct device *const bmi270 = DEVICE_DT_GET(BMI270_NODE);
@@ -267,10 +274,6 @@ void IMU::update_sensor(struct k_work *work) {
 
 	(void)bmm150_aux_read(magno_data);
 
-	if (sensor._ble_stream) {
-		audio_waveform_service_submit_imu_sample(accel_data, gyro_data, magno_data);
-	}
-
 	if (sample_log_count < 5) {
 		LOG_INF("BMI270 sample ax=%d.%06d ay=%d.%06d az=%d.%06d gx=%d.%06d gy=%d.%06d gz=%d.%06d",
 			accel[0].val1, accel[0].val2, accel[1].val1, accel[1].val2,
@@ -282,7 +285,7 @@ void IMU::update_sensor(struct k_work *work) {
 	size_t size = 3 * sizeof(float);
 	
 	msg_imu.sd = sensor._sd_logging;
-	msg_imu.stream = sensor._ble_stream;
+	msg_imu.stream = false;
 
 	msg_imu.data.id = ID_IMU;
 	msg_imu.data.size = 3 * size;
@@ -292,9 +295,23 @@ void IMU::update_sensor(struct k_work *work) {
 	memcpy(msg_imu.data.data + size, &gyro_data, size);
 	memcpy(msg_imu.data.data + 2 * size, &magno_data, size);
 
-	ret = k_msgq_put(sensor_queue, &msg_imu, K_NO_WAIT);
-	if (ret) {
-		LOG_WRN("sensor msg queue full");
+	if (sensor._ble_stream) {
+		ret = sensor_service_submit_imu_sample(&msg_imu.data);
+		if ((ret != 0) && (ret != -EACCES)) {
+			static uint32_t ble_drop_count;
+			ble_drop_count++;
+			if ((ble_drop_count == 1U) || ((ble_drop_count % 100U) == 0U)) {
+				LOG_WRN("IMU BLE batch enqueue failed: %d drops=%u",
+					ret, ble_drop_count);
+			}
+		}
+	}
+
+	if (sensor._sd_logging) {
+		ret = k_msgq_put(sensor_queue, &msg_imu, K_NO_WAIT);
+		if (ret) {
+			LOG_WRN("sensor msg queue full");
+		}
 	}
 }
 
@@ -303,7 +320,8 @@ void IMU::update_sensor(struct k_work *work) {
 */
 void IMU::sensor_timer_handler(struct k_timer *dummy)
 {
-	k_work_submit_to_queue(&sensor_work_q, &sensor.sensor_work);
+	ARG_UNUSED(dummy);
+	k_work_submit_to_queue(&imu_work_q, &sensor.sensor_work);
 };
 
 bool IMU::init(struct k_msgq * queue) {
@@ -380,6 +398,15 @@ bool IMU::init(struct k_msgq * queue) {
 	}
 
 	sensor_queue = queue;
+
+	if (!imu_work_q_started) {
+		k_work_queue_init(&imu_work_q);
+		k_work_queue_start(&imu_work_q, imu_work_q_stack,
+				   K_THREAD_STACK_SIZEOF(imu_work_q_stack),
+				   K_PRIO_PREEMPT(IMU_WORK_QUEUE_PRIORITY), NULL);
+		(void)k_thread_name_set(&imu_work_q.thread, "IMU_SAMPLE");
+		imu_work_q_started = true;
+	}
 	
 	k_work_init(&sensor.sensor_work, update_sensor);
 	k_timer_init(&sensor.sensor_timer, sensor_timer_handler, NULL);
@@ -425,11 +452,17 @@ void IMU::start(int sample_rate_idx) {
 
 void IMU::stop() {
     if (!_active) return;
-    _active = false;
-
-	_running = false;
 
 	k_timer_stop(&sensor.sensor_timer);
+	struct k_work_sync sync;
+	(void)k_work_cancel_sync(&sensor.sensor_work, &sync);
+
+	if (_ble_stream) {
+		(void)sensor_service_flush_imu_batch();
+	}
+
+	_active = false;
+	_running = false;
 
 	struct sensor_value sampling_freq;
 

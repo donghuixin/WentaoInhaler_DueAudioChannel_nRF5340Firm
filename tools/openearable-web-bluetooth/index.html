@@ -79,8 +79,8 @@
             <label for="thermalRateIndex">Refresh</label>
             <select id="thermalRateIndex">
               <option value="0">2 Hz</option>
-              <option value="1" selected>4 Hz</option>
-              <option value="2">8 Hz</option>
+              <option value="1">4 Hz</option>
+              <option value="2" selected>8 Hz</option>
             </select>
             <label for="thermalPalette">Palette</label>
             <select id="thermalPalette">
@@ -173,14 +173,38 @@
             <canvas id="audioWaveCanvas" class="wave-canvas" width="420" height="180"></canvas>
           </div>
           <div class="form-row">
-            <label for="audioWindowMode">Window</label>
-            <select id="audioWindowMode">
-              <option value="0">2 ms raw</option>
-              <option value="1">10 ms mid</option>
-              <option value="2" selected>50 ms low</option>
-              <option value="3">100 ms low</option>
-            </select>
+            <span class="metric-label">Packet</span>
+            <strong>244 B / 120 PCM16 / 7.5 ms</strong>
             <button id="readAudioWaveBtn" type="button" disabled style="margin-left:auto;">Read Latest</button>
+          </div>
+          <div class="mic-control-grid" aria-label="Audio input controls">
+            <label class="check-row" hidden>
+              <input id="micMp1Dmic1" type="checkbox" checked>
+              <span>MP1 DMIC1</span>
+            </label>
+            <label class="check-row" hidden>
+              <input id="micMp2Left" type="checkbox">
+              <span>MP2 Left</span>
+            </label>
+            <label class="check-row" hidden>
+              <input id="micMp2Right" type="checkbox">
+              <span>MP2 Right</span>
+            </label>
+            <div class="form-row compact mic-slider-row">
+              <label for="micGain">Gain</label>
+              <input id="micGain" type="range" min="0" max="63" step="1" value="0">
+              <strong id="micGainValue">0.0 dB</strong>
+            </div>
+            <div class="form-row compact mic-slider-row">
+              <label for="micNoiseGate">Noise Gate</label>
+              <input id="micNoiseGate" type="range" min="0" max="3000" step="50" value="0">
+              <strong id="micNoiseGateValue">0</strong>
+            </div>
+            <button id="applyMicConfigBtn" type="button" disabled>Apply Mic Config</button>
+            <div class="mic-route-status">
+              <span class="metric-label">Route</span>
+              <strong id="micRouteState">MP1</strong>
+            </div>
           </div>
           <div class="button-row">
             <button id="startAudioWaveBtn" class="primary" type="button" disabled>Start Wave</button>
@@ -304,12 +328,29 @@
             <div class="sd-logger-grid">
               <label class="check-row" for="bleLogImu">
                 <input id="bleLogImu" type="checkbox" checked>
-                <span>IMU (TDM 9-axis preview)</span>
+                <span>IMU (5 samples/packet, 9-axis)</span>
               </label>
+              <div class="form-row compact">
+                <label for="bleImuRateIndex">IMU rate</label>
+                <select id="bleImuRateIndex">
+                  <option value="0">25 Hz</option>
+                  <option value="1">50 Hz</option>
+                  <option value="2" selected>100 Hz</option>
+                  <option value="3">200 Hz</option>
+                </select>
+              </div>
               <label class="check-row" for="bleLogThermal">
-                <input id="bleLogThermal" type="checkbox">
-                <span>Thermal IR (TDM row data)</span>
+                <input id="bleLogThermal" type="checkbox" checked>
+                <span>Thermal IR (IR-priority, 7 packets/frame)</span>
               </label>
+              <div class="form-row compact">
+                <label for="bleThermalRateIndex">IR rate</label>
+                <select id="bleThermalRateIndex">
+                  <option value="0">2 Hz</option>
+                  <option value="1">4 Hz</option>
+                  <option value="2" selected>8 Hz</option>
+                </select>
+              </div>
               <label class="check-row" for="bleLogAudio">
                 <input id="bleLogAudio" type="checkbox" checked>
                 <span>Audio (mono, ADAU C5/MP1, 16 kHz)</span>
@@ -324,8 +365,11 @@
               <div><span class="metric-label">Duration</span><strong id="bleLogDuration">0.0s</strong></div>
               <div><span class="metric-label">Audio Samples</span><strong id="bleLogAudioCount">0</strong></div>
               <div><span class="metric-label">IMU Samples</span><strong id="bleLogImuCount">0</strong></div>
-              <div><span class="metric-label">Thermal Frames</span><strong id="bleLogThermalCount">0</strong></div>
-              <div><span class="metric-label">Dropped Packets</span><strong id="bleLogDropped" style="color:var(--danger)">0</strong></div>
+              <div><span class="metric-label">IR Frames</span><strong id="bleLogThermalCount">0</strong></div>
+              <div><span class="metric-label">Missing Total</span><strong id="bleLogDropped" style="color:var(--danger)">0</strong></div>
+              <div><span class="metric-label">Audio Missing</span><strong id="bleLogAudioMissing">0</strong></div>
+              <div><span class="metric-label">IMU Missing</span><strong id="bleLogImuMissing">0</strong></div>
+              <div><span class="metric-label">IR Packets Missing</span><strong id="bleLogThermalMissing">0</strong></div>
             </div>
           </div>
         </article>
@@ -402,6 +446,6 @@
       </div>
 
     </main>
-    <script src="app.js?v=20260604-ble-ui-fix" type="module"></script>
+    <script src="app.js?v=20260605-shared-sensor-stream" type="module"></script>
   </body>
 </html>

@@ -6,6 +6,7 @@
 #include "audio_system.h"
 #include "channel_assignment.h"
 
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(audio_config_service, CONFIG_BLE_LOG_LEVEL);
 
@@ -32,17 +33,55 @@ static ssize_t write_mic_select(struct bt_conn *conn, const struct bt_gatt_attr 
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
 
-    LOG_INF("Mic select: %d", *((uint8_t*)buf));
-
     uint8_t mic_select = *((uint8_t*)buf);
-    if (mic_select > 1) {
+
+    LOG_INF("Mic select mask: 0x%02x", mic_select);
+
+    if ((mic_select & ~HW_CODEC_MIC_MASK_VALID) != 0U) {
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
+    if (mic_select == 0U) {
+        mic_select = HW_CODEC_MIC_MP1_DMIC1;
+    }
 
-    int ret = audio_system_set_encoder_channel(mic_select == 0 ? AUDIO_CH_L : AUDIO_CH_R);
+    int ret = hw_codec_set_mic_select(mic_select);
     if (ret) {
         return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
     }
+
+    ret = audio_system_set_encoder_channel(AUDIO_CH_L);
+    if (ret) {
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
+    return len;
+}
+
+static ssize_t write_mic_control(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                              const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+    if (len != 3U) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    const uint8_t *bytes = (const uint8_t *)buf;
+    uint8_t gain_reg = bytes[0];
+    uint16_t gate_threshold = sys_get_le16(&bytes[1]);
+
+    if (gain_reg > HW_CODEC_DMIC_GAIN_MAX) {
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+
+    int ret = hw_codec_set_mic_gain(gain_reg);
+    if (ret) {
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
+
+    ret = hw_codec_set_noise_gate_threshold(gate_threshold);
+    if (ret) {
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
+
+    LOG_INF("Mic control gain=0x%02x gate=%u", gain_reg, gate_threshold);
     return len;
 }
 
@@ -56,8 +95,20 @@ static ssize_t read_audio_mode(struct bt_conn *conn, const struct bt_gatt_attr *
 static ssize_t read_mic_select(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                               void *buf, uint16_t len, uint16_t offset)
 {
-    uint8_t mic = audio_system_get_encoder_channel() == AUDIO_CH_L ? 0 : 1;
+    uint8_t mic = hw_codec_get_mic_select();
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &mic, sizeof(mic));
+}
+
+static ssize_t read_mic_control(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                              void *buf, uint16_t len, uint16_t offset)
+{
+    uint8_t mic_control[3];
+
+    mic_control[0] = hw_codec_get_mic_gain();
+    sys_put_le16(hw_codec_get_noise_gate_threshold(), &mic_control[1]);
+
+    return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                             mic_control, sizeof(mic_control));
 }
 
 static ssize_t read_audio_channel(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -82,6 +133,10 @@ BT_GATT_SERVICE_DEFINE(audio_config_svc,
                        BT_GATT_CHRC_WRITE | BT_GATT_CHRC_READ,
                        BT_GATT_PERM_WRITE | BT_GATT_PERM_READ,
                        read_mic_select, write_mic_select, NULL),
+    BT_GATT_CHARACTERISTIC(BT_UUID_MIC_CONTROL,
+                       BT_GATT_CHRC_WRITE | BT_GATT_CHRC_READ,
+                       BT_GATT_PERM_WRITE | BT_GATT_PERM_READ,
+                       read_mic_control, write_mic_control, NULL),
     BT_GATT_CHARACTERISTIC(BT_UUID_AUDIO_CHANNEL,
                        BT_GATT_CHRC_READ,
                        BT_GATT_PERM_READ,

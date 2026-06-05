@@ -23,6 +23,7 @@
 #include "audio_i2s.h"
 #include "sw_codec_select.h"
 #include "audio_system.h"
+#include "hw_codec.h"
 #include "streamctrl.h"
 #include "sd_card_playback.h"
 #include "../bluetooth/gatt_services/audio_waveform_service.h"
@@ -122,7 +123,8 @@ static const char *const pres_comp_state_names[] = {
 	"LOCKED",
 };
 
-static void audio_datapath_i2s_rx_probe(uint32_t const *rx_buf)
+static void audio_datapath_i2s_rx_probe(uint32_t *rx_buf,
+					uint32_t first_sample_timestamp_us)
 {
 	static uint32_t block_count;
 
@@ -131,11 +133,13 @@ static void audio_datapath_i2s_rx_probe(uint32_t const *rx_buf)
 	}
 
 #if CONFIG_AUDIO_BIT_DEPTH_16
-	const int16_t *samples = (const int16_t *)rx_buf;
+	int16_t *samples = (int16_t *)rx_buf;
 	const size_t sample_count = BLOCK_SIZE_BYTES / sizeof(int16_t);
 	const size_t frame_count = sample_count / 2;
 
-	(void)audio_waveform_service_submit_i2s_block(samples, frame_count);
+	hw_codec_process_i2s_block(samples, frame_count);
+	(void)audio_waveform_service_submit_i2s_block(samples, frame_count,
+						      first_sample_timestamp_us);
 #endif
 
 	block_count++;
@@ -878,7 +882,11 @@ static void audio_datapath_i2s_blk_complete(uint32_t frame_start_ts_us, uint32_t
 	if ((IS_ENABLED(CONFIG_STREAM_BIDIRECTIONAL) || (CONFIG_AUDIO_DEV == GATEWAY)) && IS_ENABLED(CONFIG_AUDIO_MIC_I2S)) {
 		/* Lock last filled buffer into message queue */
 		if (rx_buf_released != NULL) {
-			audio_datapath_i2s_rx_probe(rx_buf_released);
+			/* frame_start_ts_us belongs to the newly started block. The
+			 * released buffer is the preceding 1 ms capture block.
+			 */
+			audio_datapath_i2s_rx_probe(rx_buf_released,
+						   frame_start_ts_us - BLK_PERIOD_US);
 
 			ret = data_fifo_block_lock(ctrl_blk.in.fifo, (void **)&rx_buf_released,
 						   BLOCK_SIZE_BYTES);

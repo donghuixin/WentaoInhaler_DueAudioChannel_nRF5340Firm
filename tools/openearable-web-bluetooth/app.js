@@ -4,6 +4,7 @@ const UUIDS = {
   sensorData: '34c2e3bc-34aa-11eb-adc1-0242ac120002',
   sensorConfigStatus: '34c2e3bf-34aa-11eb-adc1-0242ac120002',
   sensorRecordingName: '34c2e3c0-34aa-11eb-adc1-0242ac120002',
+  sensorThermalData: '34c2e3c1-34aa-11eb-adc1-0242ac120002',
   parseInfoService: 'caa25cb7-7e1b-44f2-adc9-e8c06c9ced43',
   parseInfo: 'caa25cb9-7e1b-44f2-adc9-e8c06c9ced43',
   parseInfoRequest: 'caa25cba-7e1b-44f2-adc9-e8c06c9ced43',
@@ -16,6 +17,7 @@ const UUIDS = {
   audioConfigService: '1410df95-5f68-4ebb-a7c7-5e0fb9ae7557',
   audioMode: '1410df96-5f68-4ebb-a7c7-5e0fb9ae7557',
   micSelect: '1410df97-5f68-4ebb-a7c7-5e0fb9ae7557',
+  micControl: '1410df99-5f68-4ebb-a7c7-5e0fb9ae7557',
   audioChannel: '1410df98-5f68-4ebb-a7c7-5e0fb9ae7557',
   audioWaveformService: '1410dfa0-5f68-4ebb-a7c7-5e0fb9ae7557',
   audioWaveformControl: '1410dfa1-5f68-4ebb-a7c7-5e0fb9ae7557',
@@ -53,6 +55,7 @@ const KNOWN_CHARS = new Map([
   [UUIDS.sensorData, 'Sensor Data'],
   [UUIDS.sensorConfigStatus, 'Sensor Config Status'],
   [UUIDS.sensorRecordingName, 'Recording Name'],
+  [UUIDS.sensorThermalData, 'Sensor Stream (IR + IMU)'],
   [UUIDS.parseInfo, 'Parse Info'],
   [UUIDS.parseInfoRequest, 'Parse Info Request'],
   [UUIDS.parseInfoResponse, 'Parse Info Response'],
@@ -63,6 +66,7 @@ const KNOWN_CHARS = new Map([
   [UUIDS.buttonState, 'Button State'],
   [UUIDS.audioMode, 'Audio Mode'],
   [UUIDS.micSelect, 'Mic Select'],
+  [UUIDS.micControl, 'Mic Control'],
   [UUIDS.audioChannel, 'Audio Channel'],
   [UUIDS.audioWaveformControl, 'Audio Waveform Control'],
   [UUIDS.audioWaveformData, 'Audio Waveform Data'],
@@ -84,41 +88,47 @@ const SENSOR_NAMES = new Map([
 
 const IMU_SENSOR_ID = 0;
 const IMU_SAMPLE_RATE_INDEX = 2;
+const IMU_RATE_HZ = [25, 50, 100, 200, 400, 800];
 const MICROPHONE_SENSOR_ID = 2;
 const MICROPHONE_SAMPLE_RATE_INDEX = 0;
 const STORAGE_STREAMING = 0x01;
 const STORAGE_DATA_STORAGE = 0x02;
 const STORAGE_AUDIO_LEFT = 0x10;
 const STORAGE_AUDIO_RIGHT = 0x20;
+const AUDIO_MIC_MP1_DMIC1 = 0x01;
+const AUDIO_MIC_MP2_DMIC23_LEFT = 0x02;
+const AUDIO_MIC_MP2_DMIC23_RIGHT = 0x04;
+const AUDIO_MIC_MASK_VALID = AUDIO_MIC_MP1_DMIC1 | AUDIO_MIC_MP2_DMIC23_LEFT | AUDIO_MIC_MP2_DMIC23_RIGHT;
+const AUDIO_DMIC_GAIN_MAX = 0x3f;
 const AUDIO_WAVE_CONTROL_ENABLE = 0x01;
 const AUDIO_WAVE_CONTROL_RESET = 0x02;
-const AUDIO_WAVE_WINDOW_SHIFT = 2;
 const AUDIO_SAMPLE_FORMAT_PCM16 = 1;
-const TDM_PACKET_SIZE = 251;
+const TDM_PACKET_SIZE = 244;
 const TDM_SAMPLE_RATE_HZ = 16000;
-const TDM_PACKET_PERIOD_MS = 5;
-const TDM_MIC_OFFSET = 6;
-const TDM_MIC_BYTES = 160;
-const TDM_THERMAL_LEN_OFFSET = 166;
-const TDM_THERMAL_ROW_OFFSET = 167;
-const TDM_THERMAL_OFFSET = 168;
-const TDM_THERMAL_BYTES = 64;
-const TDM_IMU_LEN_OFFSET = 232;
-const TDM_IMU_OFFSET = 233;
-const TDM_IMU_BYTES = 18;
-const TDM_ACCEL_SCALE_MPS2_PER_LSB = 9.80665 / 1000;
-const TDM_GYRO_SCALE_DPS_PER_LSB = 0.1;
-const TDM_MAG_SCALE_UT_PER_LSB = 0.1;
+const TDM_PACKET_PERIOD_US = 7500;
+const TDM_PACKET_PERIOD_MS = TDM_PACKET_PERIOD_US / 1000;
+const TDM_TIMESTAMP_OFFSET = 0;
+const TDM_MIC_OFFSET = 4;
+const TDM_MIC_BYTES = 240;
+const TDM_MIC_SAMPLES = TDM_MIC_BYTES / 2;
 
-// Thermal IR (MLX90642) constants. Must match the firmware in
-// src/SensorManager/Thermal.{h,cpp} and the chunk header layout.
+// Shared Sensor Stream constants. Must match sensor_service.h.
 const THERMAL_SENSOR_ID = 8;
-const THERMAL_SAMPLE_RATE_INDEX = 1; // default 4 Hz
+const THERMAL_SAMPLE_RATE_INDEX = 2; // default 8 Hz
+const THERMAL_RATE_HZ = [2, 4, 8, 16];
 const THERMAL_NUM_COLS = 32;
 const THERMAL_NUM_ROWS = 24;
 const THERMAL_NUM_PIXELS = THERMAL_NUM_COLS * THERMAL_NUM_ROWS;
-let thermalPixelsPerChunk = 16;
-let thermalTotalChunks = Math.ceil(THERMAL_NUM_PIXELS / thermalPixelsPerChunk);
+const SENSOR_STREAM_HEADER_SIZE = 16;
+const SENSOR_STREAM_TYPE_THERMAL = 1;
+const SENSOR_STREAM_TYPE_IMU_BATCH = 2;
+const THERMAL_BLE_PIXELS_PER_PACKET = 114;
+const THERMAL_BLE_PACKETS_PER_FRAME = 7;
+const IMU_STREAM_PAYLOAD_SIZE = 36;
+const IMU_STREAM_SAMPLE_SIZE = 4 + IMU_STREAM_PAYLOAD_SIZE;
+const IMU_STREAM_BATCH_SAMPLES = 5;
+let thermalPixelsPerChunk = THERMAL_BLE_PIXELS_PER_PACKET;
+let thermalTotalChunks = THERMAL_BLE_PACKETS_PER_FRAME;
 const THERMAL_RAW_TO_C = 1 / 50; // raw int16 / 50 = degrees Celsius
 
 const els = {
@@ -173,7 +183,6 @@ const els = {
   imuMy: document.querySelector('#imuMy'),
   imuMz: document.querySelector('#imuMz'),
   audioWaveState: document.querySelector('#audioWaveState'),
-  audioWindowMode: document.querySelector('#audioWindowMode'),
   audioSeq: document.querySelector('#audioSeq'),
   audioRate: document.querySelector('#audioRate'),
   audioSampleInterval: document.querySelector('#audioSampleInterval'),
@@ -187,6 +196,15 @@ const els = {
   audioPlotScale: document.querySelector('#audioPlotScale'),
   audioPacketInfo: document.querySelector('#audioPacketInfo'),
   audioWaveCanvas: document.querySelector('#audioWaveCanvas'),
+  micMp1Dmic1: document.querySelector('#micMp1Dmic1'),
+  micMp2Left: document.querySelector('#micMp2Left'),
+  micMp2Right: document.querySelector('#micMp2Right'),
+  micGain: document.querySelector('#micGain'),
+  micGainValue: document.querySelector('#micGainValue'),
+  micNoiseGate: document.querySelector('#micNoiseGate'),
+  micNoiseGateValue: document.querySelector('#micNoiseGateValue'),
+  applyMicConfigBtn: document.querySelector('#applyMicConfigBtn'),
+  micRouteState: document.querySelector('#micRouteState'),
   recordAudioBtn: document.querySelector('#recordAudioBtn'),
   playAudioBtn: document.querySelector('#playAudioBtn'),
   recordStatus: document.querySelector('#recordStatus'),
@@ -237,7 +255,9 @@ const els = {
   bleLoggerTab: document.querySelector('#bleLoggerTab'),
   bleLoggerState: document.querySelector('#bleLoggerState'),
   bleLogImu: document.querySelector('#bleLogImu'),
+  bleImuRateIndex: document.querySelector('#bleImuRateIndex'),
   bleLogThermal: document.querySelector('#bleLogThermal'),
+  bleThermalRateIndex: document.querySelector('#bleThermalRateIndex'),
   bleLogAudio: document.querySelector('#bleLogAudio'),
   startBleLoggerBtn: document.querySelector('#startBleLoggerBtn'),
   stopBleLoggerBtn: document.querySelector('#stopBleLoggerBtn'),
@@ -247,6 +267,9 @@ const els = {
   bleLogImuCount: document.querySelector('#bleLogImuCount'),
   bleLogThermalCount: document.querySelector('#bleLogThermalCount'),
   bleLogDropped: document.querySelector('#bleLogDropped'),
+  bleLogAudioMissing: document.querySelector('#bleLogAudioMissing'),
+  bleLogImuMissing: document.querySelector('#bleLogImuMissing'),
+  bleLogThermalMissing: document.querySelector('#bleLogThermalMissing'),
   hwLogDropped: document.querySelector('#hwLogDropped')
 };
 
@@ -258,10 +281,14 @@ let sensorConfigChar = null;
 let sensorDataChar = null;
 let sensorStatusChar = null;
 let sensorRecordingNameChar = null;
+let sensorThermalDataChar = null;
+let micSelectChar = null;
+let micControlChar = null;
 let audioWaveformControlChar = null;
 let audioWaveformDataChar = null;
 let sensorDataNotifying = false;
 let sensorStatusNotifying = false;
+let sensorThermalDataNotifying = false;
 let audioWaveformNotifying = false;
 const genericNotifyHandlers = new WeakMap();
 const audioPeakHistory = [];
@@ -271,21 +298,35 @@ let lastAudioPeak = 0;
 let lastAudioDurationMs = 0;
 let lastAudioPointRate = 0;
 let audioWindowAssembly = null;
-let lastTdmSeq = null;
+let lastTdmFirstSampleTimestampUs = null;
+let lastTdmUnwrappedTimestampUs = null;
+let lastTdmArrivalMs = null;
+let tdmPacketCount = 0;
 let tdmDroppedPackets = 0;
-let thermalTdmFrameActive = false;
-let thermalTdmExpectedRow = 0;
+let tdmDroppedSamples = 0;
+let tdmTimestampJitterEvents = 0;
+let tdmTimestampMaxAbsJitterUs = 0;
+let tdmArrivalMaxAbsJitterMs = 0;
+let lastAudioUiUpdateMs = 0;
+let lastImuUiUpdateMs = 0;
+let lastThermalUiUpdateMs = 0;
+let lastBleLoggerCounterUpdateMs = 0;
 
 let isRecordingAudio = false;
 let recordedAudioBuffer = [];
 let recordedAudioPointRate = 0;
-let recordedAudioStartMs = null;
 let playbackAudioContext = null;
 let currentAudioSource = null;
 
 // Web Bluetooth allows one GATT operation at a time per connection.
 let gattQueue = Promise.resolve();
 let bleLoggerOperation = null;
+const activeSensorConfigs = new Map();
+const bleLoggerOwnedSensors = new Map();
+const bleLoggerPreviousConfigs = new Map();
+let bleLoggerStartedSensorNotifications = false;
+let bleLoggerStartedThermalNotifications = false;
+let bleLoggerStartedAudioNotifications = false;
 
 function enqueueGatt(fn) {
   const run = async () => {
@@ -336,54 +377,63 @@ async function gattStopNotifications(characteristic, handler) {
   });
 }
 
-function ensureRecordedAudioCapacity(sampleIndex) {
-  while (recordedAudioBuffer.length <= sampleIndex) {
-    recordedAudioBuffer.push(0);
-  }
-}
+function appendRecordedTdmSamples(micSamples, missingSamples) {
+  if (!micSamples || micSamples.length === 0) return;
 
-function appendRecordedTdmSamples(timestampMs, micSamples, droppedNow) {
-  if (recordedAudioStartMs === null) {
-    recordedAudioStartMs = timestampMs;
-    recordedAudioPointRate = TDM_SAMPLE_RATE_HZ;
-  }
+  recordedAudioPointRate = TDM_SAMPLE_RATE_HZ;
+  if (missingSamples > 0 && recordedAudioBuffer.length > 0) {
+    const previousSample = recordedAudioBuffer[recordedAudioBuffer.length - 1];
+    const nextSample = micSamples[0];
 
-  const samplesPerPacket = TDM_MIC_BYTES / 2;
-  if (droppedNow > 0) {
-    const silenceStart = Math.max(
-      0,
-      Math.round(((timestampMs - recordedAudioStartMs) - droppedNow * TDM_PACKET_PERIOD_MS) * TDM_SAMPLE_RATE_HZ / 1000)
-    );
-    ensureRecordedAudioCapacity(silenceStart + droppedNow * samplesPerPacket - 1);
-    for (let s = 0; s < droppedNow * samplesPerPacket; s++) {
-      recordedAudioBuffer[silenceStart + s] = 0;
+    // Preserve the capture sample clock without inserting a hard zero edge.
+    // The packet timestamp is the first PCM sample's I2S capture time.
+    for (let i = 1; i <= missingSamples; i++) {
+      const alpha = i / (missingSamples + 1);
+      recordedAudioBuffer.push(Math.round(previousSample + ((nextSample - previousSample) * alpha)));
     }
   }
 
-  const sampleOffset = Math.max(
-    0,
-    Math.round((timestampMs - recordedAudioStartMs) * TDM_SAMPLE_RATE_HZ / 1000)
-  );
-  ensureRecordedAudioCapacity(sampleOffset + micSamples.length - 1);
-  for (let i = 0; i < micSamples.length; i++) {
-    recordedAudioBuffer[sampleOffset + i] = micSamples[i];
-  }
+  recordedAudioBuffer.push(...micSamples);
 }
 
 // BLE Data Logger state
 let isBleLogging = false;
 let bleLogStartTime = 0;
-let bleLogAudioBuffer = [];   // { timestamp_ms, samples: Int16Array }
-let bleLogImuBuffer = [];     // { timestamp_ms, ax, ay, az, gx, gy, gz, mx, my, mz }
-let bleLogThermalBuffer = []; // { timestamp_ms, row, pixels: Int16Array }
+let bleLogAudioBuffer = [];   // { timestamp_us, samples, missing_samples }
+let bleLogImuBuffer = [];     // { timestamp_us, ax, ay, az, gx, gy, gz, mx, my, mz }
+let bleLogThermalBuffer = []; // complete 32x24 frames, or legacy raw chunks
 let bleLogDroppedCount = 0;
+let bleLogAudioMissingCount = 0;
+let bleLogImuMissingCount = 0;
+let bleLogThermalMissingCount = 0;
+let latestSensorTimestampUs = null;
+let lastBleLogImuTimestampUs = null;
+let bleLogImuRateHz = 100;
+let bleLogThermalRateHz = 8;
+
+function updateBleLoggerCounters(force = false) {
+  const now = performance.now();
+  if (!force && now - lastBleLoggerCounterUpdateMs < 100) {
+    return;
+  }
+  lastBleLoggerCounterUpdateMs = now;
+  if (els.bleLogAudioCount) els.bleLogAudioCount.textContent = String(bleLogAudioBuffer.length);
+  if (els.bleLogImuCount) els.bleLogImuCount.textContent = String(bleLogImuBuffer.length);
+  if (els.bleLogThermalCount) els.bleLogThermalCount.textContent = String(bleLogThermalBuffer.length);
+  if (els.bleLogDropped) els.bleLogDropped.textContent = String(bleLogDroppedCount);
+  if (els.bleLogAudioMissing) els.bleLogAudioMissing.textContent = String(bleLogAudioMissingCount);
+  if (els.bleLogImuMissing) els.bleLogImuMissing.textContent = String(bleLogImuMissingCount);
+  if (els.bleLogThermalMissing) els.bleLogThermalMissing.textContent = String(bleLogThermalMissingCount);
+}
 
 // Thermal IR streaming state. The frame buffer holds raw int16 values from
 // the MLX90642 (raw / 50 = degrees Celsius); we render the most recent
 // fully-assembled frame to the canvas.
 const thermalFrameRaw = new Int16Array(THERMAL_NUM_PIXELS);
-const thermalChunkReceived = new Uint8Array(thermalTotalChunks);
+const thermalChunkReceived = new Uint8Array(48);
 let thermalCurrentFrameTime = null;
+let thermalCurrentFrameSequence = null;
+let thermalLastCompletedSequence = null;
 let thermalFramesRendered = 0;
 let thermalDroppedFrames = 0;
 let thermalChunksThisFrame = 0;
@@ -485,8 +535,16 @@ function resetAudioWaveformValues() {
   lastAudioDurationMs = 0;
   lastAudioPointRate = 0;
   audioWindowAssembly = null;
-  lastTdmSeq = null;
+  lastTdmFirstSampleTimestampUs = null;
+  lastTdmUnwrappedTimestampUs = null;
+  lastTdmArrivalMs = null;
+  tdmPacketCount = 0;
   tdmDroppedPackets = 0;
+  tdmDroppedSamples = 0;
+  tdmTimestampJitterEvents = 0;
+  tdmTimestampMaxAbsJitterUs = 0;
+  tdmArrivalMaxAbsJitterMs = 0;
+  lastAudioUiUpdateMs = 0;
   els.audioWaveState.textContent = 'Preview off';
   drawAudioWaveform([]);
 }
@@ -662,19 +720,22 @@ async function readHardwareStatus() {
 function setConnectedUi(isConnected) {
   els.disconnectBtn.disabled = !isConnected;
   els.readBatteryBtn.disabled = !isConnected;
-  els.startImuBtn.disabled = !isConnected || !sensorConfigChar || !sensorDataChar;
+  els.startImuBtn.disabled = !isConnected || !sensorConfigChar || !sensorThermalDataChar;
   els.stopImuBtn.disabled = !isConnected || !sensorConfigChar;
   els.startAudioWaveBtn.disabled = !isConnected || !sensorConfigChar || !audioWaveformControlChar || !audioWaveformDataChar;
   els.stopAudioWaveBtn.disabled = !isConnected || !audioWaveformControlChar;
   els.recordAudioBtn.disabled = !isConnected || !audioWaveformControlChar;
   els.playAudioBtn.disabled = recordedAudioBuffer.length === 0;
   els.readAudioWaveBtn.disabled = !isConnected || !audioWaveformDataChar;
+  if (els.applyMicConfigBtn) {
+    els.applyMicConfigBtn.disabled = !isConnected || !micSelectChar || !micControlChar;
+  }
   els.enableSensorBtn.disabled = !isConnected || !sensorConfigChar;
   els.disableSensorBtn.disabled = !isConnected || !sensorConfigChar;
   els.subscribeSensorBtn.disabled = !isConnected || !sensorDataChar;
   els.subscribeStatusBtn.disabled = !isConnected || !sensorStatusChar;
   if (els.startThermalBtn) {
-    els.startThermalBtn.disabled = !isConnected || !sensorConfigChar || !sensorDataChar;
+    els.startThermalBtn.disabled = !isConnected || !sensorConfigChar || !sensorThermalDataChar;
   }
   if (els.stopThermalBtn) {
     els.stopThermalBtn.disabled = !isConnected || !sensorConfigChar;
@@ -689,7 +750,7 @@ function setConnectedUi(isConnected) {
     els.stopSdLoggerBtn.disabled = !isConnected || !sensorConfigChar;
   }
   if (els.startBleLoggerBtn) {
-    els.startBleLoggerBtn.disabled = !isConnected || !sensorConfigChar || !audioWaveformControlChar;
+    els.startBleLoggerBtn.disabled = !isConnected || !sensorConfigChar;
   }
   if (els.stopBleLoggerBtn) {
     els.stopBleLoggerBtn.disabled = !isConnected || !isBleLogging;
@@ -707,10 +768,14 @@ function resetConnectionState() {
   sensorDataChar = null;
   sensorStatusChar = null;
   sensorRecordingNameChar = null;
+  sensorThermalDataChar = null;
+  micSelectChar = null;
+  micControlChar = null;
   audioWaveformControlChar = null;
   audioWaveformDataChar = null;
   sensorDataNotifying = false;
   sensorStatusNotifying = false;
+  sensorThermalDataNotifying = false;
   audioWaveformNotifying = false;
   packetCount = 0;
   els.packetCount.textContent = '0';
@@ -721,13 +786,26 @@ function resetConnectionState() {
 
   isRecordingAudio = false;
   recordedAudioBuffer = [];
-  recordedAudioStartMs = null;
   isBleLogging = false;
   bleLoggerOperation = null;
   bleLogAudioBuffer = [];
   bleLogImuBuffer = [];
   bleLogThermalBuffer = [];
   bleLogDroppedCount = 0;
+  bleLogAudioMissingCount = 0;
+  bleLogImuMissingCount = 0;
+  bleLogThermalMissingCount = 0;
+  latestSensorTimestampUs = null;
+  lastBleLogImuTimestampUs = null;
+  lastImuUiUpdateMs = 0;
+  lastThermalUiUpdateMs = 0;
+  lastBleLoggerCounterUpdateMs = 0;
+  activeSensorConfigs.clear();
+  bleLoggerOwnedSensors.clear();
+  bleLoggerPreviousConfigs.clear();
+  bleLoggerStartedSensorNotifications = false;
+  bleLoggerStartedThermalNotifications = false;
+  bleLoggerStartedAudioNotifications = false;
   if (bleLogTimer) {
     clearInterval(bleLogTimer);
     bleLogTimer = null;
@@ -886,6 +964,12 @@ function cacheCharacteristic(characteristic) {
     sensorStatusChar = characteristic;
   } else if (uuid === UUIDS.sensorRecordingName) {
     sensorRecordingNameChar = characteristic;
+  } else if (uuid === UUIDS.sensorThermalData) {
+    sensorThermalDataChar = characteristic;
+  } else if (uuid === UUIDS.micSelect) {
+    micSelectChar = characteristic;
+  } else if (uuid === UUIDS.micControl) {
+    micControlChar = characteristic;
   } else if (uuid === UUIDS.audioWaveformControl) {
     audioWaveformControlChar = characteristic;
   } else if (uuid === UUIDS.audioWaveformData) {
@@ -1011,6 +1095,14 @@ async function readDeviceSummary() {
     const channel = value.getUint8(0);
     setFact('factAudioChannel', channel === 0 ? 'Left (0)' : channel === 1 ? 'Right (1)' : String(channel));
   });
+  await readAudioInputConfig();
+  if (sensorStatusChar) {
+    try {
+      decodeSensorConfigStatus(await gattReadValue(sensorStatusChar));
+    } catch (error) {
+      log(`Sensor config status read failed: ${error.message}`);
+    }
+  }
   await readHardwareStatus();
   setConnectedUi(true);
 }
@@ -1072,6 +1164,11 @@ async function writeSensorConfigPayload(sensorId, sampleRateIndex, storageOption
     await gattWriteValue(sensorConfigChar, payload);
     const sensorName = SENSOR_NAMES.get(sensorId) || `Sensor ${sensorId}`;
     const action = storageOptions === 0 ? 'Disabled' : 'Configured';
+    if (storageOptions === 0) {
+      activeSensorConfigs.delete(sensorId);
+    } else {
+      activeSensorConfigs.set(sensorId, { sampleRateIndex, storageOptions });
+    }
     log(`${action} ${sensorName}`, { sensorId, sampleRateIndex, storageOptions, hex: bytesToHex(payload) });
     return true;
   } catch (error) {
@@ -1116,16 +1213,36 @@ async function setSensorDataNotify(enable) {
   return true;
 }
 
+async function setThermalDataNotify(enable) {
+  if (!sensorThermalDataChar) {
+    log('Thermal IR data characteristic unavailable');
+    return false;
+  }
+
+  if (enable && !sensorThermalDataNotifying) {
+    await gattStartNotifications(sensorThermalDataChar, handleThermalData);
+    sensorThermalDataNotifying = true;
+    thermalNotifyEnabled = true;
+    log('Thermal IR large-packet notifications enabled');
+  } else if (!enable && sensorThermalDataNotifying) {
+    await gattStopNotifications(sensorThermalDataChar, handleThermalData);
+    sensorThermalDataNotifying = false;
+    thermalNotifyEnabled = false;
+    log('Thermal IR large-packet notifications disabled');
+  }
+
+  return true;
+}
+
 async function startImuStream() {
   els.sensorId.value = String(IMU_SENSOR_ID);
   els.sampleRateIndex.value = String(IMU_SAMPLE_RATE_INDEX);
 
-  await ensureTdmNotifications({ reset: lastTdmSeq == null });
-  await setSensorDataNotify(true);
+  await setThermalDataNotify(true);
 
   const written = await writeSensorConfigPayload(IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, STORAGE_STREAMING);
   if (written) {
-    log('IMU stream requested. TDM packets will carry accel, gyro, and magnetometer samples in the 18-byte slot.');
+    log('IMU stream requested through batched Sensor Stream packets.');
   }
 }
 
@@ -1133,18 +1250,113 @@ async function stopImuStream() {
   els.sensorId.value = String(IMU_SENSOR_ID);
   els.sampleRateIndex.value = String(IMU_SAMPLE_RATE_INDEX);
   await writeSensorConfigPayload(IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, 0x00);
+  if (!sensorIsStreaming(THERMAL_SENSOR_ID) &&
+      !isBleLogging &&
+      sensorThermalDataNotifying) {
+    await setThermalDataNotify(false);
+  }
 }
 
-function selectedAudioWindowMode() {
-  const parsed = Number.parseInt(els.audioWindowMode?.value ?? '2', 10);
-  return Number.isFinite(parsed) ? Math.max(0, Math.min(3, parsed)) : 2;
+function selectedMicMask() {
+  let mask = 0;
+  if (els.micMp1Dmic1?.checked) mask |= AUDIO_MIC_MP1_DMIC1;
+  if (els.micMp2Left?.checked) mask |= AUDIO_MIC_MP2_DMIC23_LEFT;
+  if (els.micMp2Right?.checked) mask |= AUDIO_MIC_MP2_DMIC23_RIGHT;
+
+  if (mask === 0) {
+    mask = AUDIO_MIC_MP1_DMIC1;
+    if (els.micMp1Dmic1) els.micMp1Dmic1.checked = true;
+  }
+
+  return mask & AUDIO_MIC_MASK_VALID;
+}
+
+function micLabelsForMask(mask) {
+  const labels = [];
+  if (mask & AUDIO_MIC_MP1_DMIC1) labels.push('MP1');
+  if (mask & AUDIO_MIC_MP2_DMIC23_LEFT) labels.push('MP2-L');
+  if (mask & AUDIO_MIC_MP2_DMIC23_RIGHT) labels.push('MP2-R');
+  return labels;
+}
+
+function syncMicUiFromMask(mask) {
+  if (els.micMp1Dmic1) els.micMp1Dmic1.checked = Boolean(mask & AUDIO_MIC_MP1_DMIC1);
+  if (els.micMp2Left) els.micMp2Left.checked = Boolean(mask & AUDIO_MIC_MP2_DMIC23_LEFT);
+  if (els.micMp2Right) els.micMp2Right.checked = Boolean(mask & AUDIO_MIC_MP2_DMIC23_RIGHT);
+  updateMicControlLabels();
+}
+
+function updateMicControlLabels() {
+  const gain = Math.max(0, Math.min(AUDIO_DMIC_GAIN_MAX, Number.parseInt(els.micGain?.value ?? '0', 10) || 0));
+  const threshold = Math.max(0, Number.parseInt(els.micNoiseGate?.value ?? '0', 10) || 0);
+  const labels = micLabelsForMask(selectedMicMask());
+  const routed = labels.slice(0, 2).join(' + ') || 'MP1';
+
+  if (els.micGainValue) els.micGainValue.textContent = `${(gain * 0.375).toFixed(1)} dB`;
+  if (els.micNoiseGateValue) els.micNoiseGateValue.textContent = String(threshold);
+  if (els.micRouteState) {
+    els.micRouteState.textContent = labels.length > 2 ? `${routed} routed` : routed;
+  }
+}
+
+async function readAudioInputConfig() {
+  if (micSelectChar) {
+    try {
+      const value = await gattReadValue(micSelectChar);
+      syncMicUiFromMask(value.getUint8(0));
+    } catch (error) {
+      log(`Mic select read failed: ${error.message}`);
+    }
+  }
+
+  if (micControlChar) {
+    try {
+      const value = await gattReadValue(micControlChar);
+      if (value.byteLength >= 3) {
+        const gain = value.getUint8(0);
+        const threshold = value.getUint16(1, true);
+        if (els.micGain) els.micGain.value = String(gain);
+        if (els.micNoiseGate) els.micNoiseGate.value = String(threshold);
+        updateMicControlLabels();
+      }
+    } catch (error) {
+      log(`Mic control read failed: ${error.message}`);
+    }
+  }
+}
+
+async function applyAudioInputConfig({ quiet = false } = {}) {
+  if (!micSelectChar || !micControlChar) {
+    if (!quiet) log('Mic control characteristic unavailable');
+    return false;
+  }
+
+  const mask = selectedMicMask();
+  const gain = Math.max(0, Math.min(AUDIO_DMIC_GAIN_MAX, Number.parseInt(els.micGain?.value ?? '0', 10) || 0));
+  const threshold = Math.max(0, Math.min(32767, Number.parseInt(els.micNoiseGate?.value ?? '0', 10) || 0));
+  const control = new Uint8Array(3);
+
+  control[0] = gain;
+  control[1] = threshold & 0xff;
+  control[2] = (threshold >> 8) & 0xff;
+
+  await gattWriteValue(micSelectChar, new Uint8Array([mask]));
+  await gattWriteValue(micControlChar, control);
+  updateMicControlLabels();
+
+  if (!quiet) {
+    log('Mic config applied', {
+      mask: `0x${mask.toString(16).padStart(2, '0')}`,
+      gain,
+      threshold
+    });
+  }
+  return true;
 }
 
 function audioWaveformControlValue({ reset = true } = {}) {
-  const mode = selectedAudioWindowMode();
   return AUDIO_WAVE_CONTROL_ENABLE |
-    (reset ? AUDIO_WAVE_CONTROL_RESET : 0) |
-    (mode << AUDIO_WAVE_WINDOW_SHIFT);
+    (reset ? AUDIO_WAVE_CONTROL_RESET : 0);
 }
 
 async function ensureTdmNotifications({ reset = false } = {}) {
@@ -1157,18 +1369,20 @@ async function ensureTdmNotifications({ reset = false } = {}) {
     audioWaveformNotifying = true;
   }
 
-  await gattWriteValue(audioWaveformControlChar, new Uint8Array([audioWaveformControlValue({ reset })]));
-  return true;
-}
-
-async function updateAudioWaveformWindow() {
-  if (!audioWaveformControlChar || !audioWaveformNotifying) {
-    return;
+  if (reset) {
+    lastTdmFirstSampleTimestampUs = null;
+    lastTdmUnwrappedTimestampUs = null;
+    lastTdmArrivalMs = null;
+    tdmPacketCount = 0;
+    tdmDroppedPackets = 0;
+    tdmDroppedSamples = 0;
+    tdmTimestampJitterEvents = 0;
+    tdmTimestampMaxAbsJitterUs = 0;
+    tdmArrivalMaxAbsJitterMs = 0;
   }
 
-  audioWindowAssembly = null;
-  await gattWriteValue(audioWaveformControlChar, new Uint8Array([audioWaveformControlValue({ reset: true })]));
-  log(`Audio waveform window changed to ${els.audioWindowMode.value}`);
+  await gattWriteValue(audioWaveformControlChar, new Uint8Array([audioWaveformControlValue({ reset })]));
+  return true;
 }
 
 async function startAudioWaveform() {
@@ -1179,13 +1393,14 @@ async function startAudioWaveform() {
 
   try {
     audioWindowAssembly = null;
+    await applyAudioInputConfig({ quiet: true });
     await ensureTdmNotifications({ reset: true });
     await writeSensorConfigPayload(MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, STORAGE_STREAMING);
 
-    els.audioWaveState.textContent = 'TDM stream on';
+    els.audioWaveState.textContent = 'PCM stream on';
     els.startAudioWaveBtn.disabled = true;
     els.stopAudioWaveBtn.disabled = false;
-    log(`16 kHz TDM audio stream requested, packet=${TDM_PACKET_SIZE} B`);
+    log(`16 kHz PCM stream requested: ${TDM_MIC_SAMPLES} samples / ${TDM_PACKET_PERIOD_MS} ms, packet=${TDM_PACKET_SIZE} B`);
   } catch (error) {
     log(`Audio waveform start failed: ${error.message}`);
   }
@@ -1232,8 +1447,7 @@ async function readAudioWaveform() {
 
 function handleAudioWaveformData(event) {
   const preview = decodeAudioWaveformPacket(event.target.value);
-  const seq = Number.parseInt(els.audioSeq.textContent, 10);
-  if (!Number.isFinite(seq) || seq < 5 || seq % 25 === 0) {
+  if (tdmPacketCount <= 5 || tdmPacketCount % 25 === 0) {
     log(`Audio waveform: ${preview}`);
   }
 }
@@ -1286,6 +1500,7 @@ function decodeSensorPacket(value) {
   const id = value.getUint8(0);
   const size = value.getUint8(1);
   const time = readUint64Le(value, 2);
+  latestSensorTimestampUs = Number(time);
   const payloadLength = Math.max(0, Math.min(size, value.byteLength - 10));
   const payload = new Uint8Array(value.buffer, value.byteOffset + 10, payloadLength);
   const hex = bytesToHex(payload);
@@ -1320,17 +1535,48 @@ function decodeImuPayload(packetView, payloadLength, time) {
     values.push(packetView.getFloat32(offset, true));
   }
 
+  return processImuSample(Number(time), values);
+}
+
+function processImuSample(timestampUs, values) {
   const [ax, ay, az, gx, gy, gz, mx, my, mz] = values;
-  els.imuTime.textContent = time;
-  els.imuAx.textContent = formatNumber(ax);
-  els.imuAy.textContent = formatNumber(ay);
-  els.imuAz.textContent = formatNumber(az);
-  els.imuGx.textContent = formatNumber(gx);
-  els.imuGy.textContent = formatNumber(gy);
-  els.imuGz.textContent = formatNumber(gz);
-  els.imuMx.textContent = formatNumber(mx);
-  els.imuMy.textContent = formatNumber(my);
-  els.imuMz.textContent = formatNumber(mz);
+  latestSensorTimestampUs = timestampUs;
+  const now = performance.now();
+  if (now - lastImuUiUpdateMs >= 50) {
+    lastImuUiUpdateMs = now;
+    els.imuTime.textContent = String(timestampUs);
+    els.imuAx.textContent = formatNumber(ax);
+    els.imuAy.textContent = formatNumber(ay);
+    els.imuAz.textContent = formatNumber(az);
+    els.imuGx.textContent = formatNumber(gx);
+    els.imuGy.textContent = formatNumber(gy);
+    els.imuGz.textContent = formatNumber(gz);
+    els.imuMx.textContent = formatNumber(mx);
+    els.imuMy.textContent = formatNumber(my);
+    els.imuMz.textContent = formatNumber(mz);
+  }
+
+  if (isBleLogging && els.bleLogImu?.checked) {
+    if (lastBleLogImuTimestampUs !== null && bleLogImuRateHz > 0) {
+      const expectedPeriodUs = 1000000 / bleLogImuRateHz;
+      const deltaUs = timestampUs - lastBleLogImuTimestampUs;
+      if (deltaUs > expectedPeriodUs * 1.5) {
+        const missingImuSamples = Math.max(
+          0,
+          Math.round(deltaUs / expectedPeriodUs) - 1
+        );
+        bleLogImuMissingCount += missingImuSamples;
+        bleLogDroppedCount += missingImuSamples;
+      }
+    }
+    lastBleLogImuTimestampUs = timestampUs;
+    bleLogImuBuffer.push({
+      timestamp_us: timestampUs,
+      rate_hz: bleLogImuRateHz,
+      ax, ay, az, gx, gy, gz, mx, my, mz
+    });
+    updateBleLoggerCounters();
+  }
 
   return `accel=[${formatNumber(ax)}, ${formatNumber(ay)}, ${formatNumber(az)}] gyro=[${formatNumber(gx)}, ${formatNumber(gy)}, ${formatNumber(gz)}] mag=[${formatNumber(mx)}, ${formatNumber(my)}, ${formatNumber(mz)}]`;
 }
@@ -1516,19 +1762,36 @@ function decodeThermalChunk(value, payloadLength, time) {
   }
 
   const start = chunkIdx * thermalPixelsPerChunk;
+  const chunkPixels = new Int16Array(count);
   for (let i = 0; i < count; i++) {
     const dst = start + i;
     if (dst >= THERMAL_NUM_PIXELS) break;
     // Each pixel is little-endian int16 in the BLE payload.
-    thermalFrameRaw[dst] = value.getInt16(12 + i * 2, true);
+    const rawPixel = value.getInt16(12 + i * 2, true);
+    thermalFrameRaw[dst] = rawPixel;
+    chunkPixels[i] = rawPixel;
+  }
+
+  if (isBleLogging && els.bleLogThermal?.checked) {
+    bleLogThermalBuffer.push({
+      timestamp_us: Number(time),
+      chunk_index: chunkIdx,
+      pixel_count: count,
+      pixels: chunkPixels
+    });
+    updateBleLoggerCounters();
   }
 
   if (!thermalChunkReceived[chunkIdx]) {
     thermalChunkReceived[chunkIdx] = 1;
     thermalChunksThisFrame += 1;
   }
-  if (els.thermalChunks) els.thermalChunks.textContent = `${thermalChunksThisFrame}/${thermalTotalChunks}`;
-  if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `Stride: ${thermalPixelsPerChunk}px`;
+  const now = performance.now();
+  if (now - lastThermalUiUpdateMs >= 50) {
+    lastThermalUiUpdateMs = now;
+    if (els.thermalChunks) els.thermalChunks.textContent = `${thermalChunksThisFrame}/${thermalTotalChunks}`;
+    if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `Stride: ${thermalPixelsPerChunk}px`;
+  }
 
   if (thermalChunksThisFrame >= thermalTotalChunks) {
     renderThermalFrame();
@@ -1541,17 +1804,189 @@ function decodeThermalChunk(value, payloadLength, time) {
   return `chunk=${chunkIdx} count=${count} progress=${thermalChunksThisFrame}/${thermalTotalChunks}`;
 }
 
+function decodeThermalBlePacket(value) {
+  if (value.byteLength < SENSOR_STREAM_HEADER_SIZE) {
+    return `short packet ${value.byteLength}B`;
+  }
+
+  const time = readUint64Le(value, 0);
+  const timestampUs = Number(time);
+  const frameSequence = value.getUint16(8, true);
+  const packetType = value.getUint8(10);
+  const pixelCount = value.getUint8(11);
+  const pixelOffset = value.getUint16(12, true);
+  const packetIndex = value.getUint8(14);
+  const packetCount = value.getUint8(15);
+  const expectedBytes = SENSOR_STREAM_HEADER_SIZE + pixelCount * 2;
+
+  latestSensorTimestampUs = timestampUs;
+  thermalPixelsPerChunk = THERMAL_BLE_PIXELS_PER_PACKET;
+  thermalTotalChunks = packetCount;
+
+  if (packetType !== SENSOR_STREAM_TYPE_THERMAL ||
+      packetCount !== THERMAL_BLE_PACKETS_PER_FRAME ||
+      packetIndex >= packetCount ||
+      pixelCount === 0 ||
+      pixelOffset + pixelCount > THERMAL_NUM_PIXELS ||
+      expectedBytes !== value.byteLength) {
+    return `bad packet frame=${frameSequence} packet=${packetIndex}/${packetCount} offset=${pixelOffset} pixels=${pixelCount} bytes=${value.byteLength}`;
+  }
+
+  const newFrame = thermalCurrentFrameTime !== time ||
+    thermalCurrentFrameSequence !== frameSequence;
+  if (newFrame) {
+    const previousFrameSequence = thermalCurrentFrameSequence;
+    const hadIncompleteFrame = thermalCurrentFrameTime !== null &&
+      thermalChunksThisFrame < thermalTotalChunks;
+
+    if (hadIncompleteFrame) {
+      const missingPackets = thermalTotalChunks - thermalChunksThisFrame;
+      thermalDroppedFrames += 1;
+      if (isBleLogging && els.bleLogThermal?.checked) {
+        bleLogThermalMissingCount += missingPackets;
+        bleLogDroppedCount += missingPackets;
+      }
+    }
+
+    const sequenceReference = hadIncompleteFrame
+      ? previousFrameSequence
+      : thermalLastCompletedSequence;
+    if (sequenceReference !== null) {
+      const sequenceGap =
+        (frameSequence - sequenceReference - 1 + 0x10000) & 0xffff;
+      if (sequenceGap > 0 && sequenceGap < 0x8000) {
+        thermalDroppedFrames += sequenceGap;
+        if (isBleLogging && els.bleLogThermal?.checked) {
+          const missingPackets =
+            sequenceGap * THERMAL_BLE_PACKETS_PER_FRAME;
+          bleLogThermalMissingCount += missingPackets;
+          bleLogDroppedCount += missingPackets;
+        }
+      }
+    }
+
+    thermalCurrentFrameTime = time;
+    thermalCurrentFrameSequence = frameSequence;
+    resetThermalAssembly();
+  }
+
+  if (thermalChunkReceived[packetIndex]) {
+    return `duplicate frame=${frameSequence} packet=${packetIndex}`;
+  }
+
+  for (let i = 0; i < pixelCount; i++) {
+    thermalFrameRaw[pixelOffset + i] =
+      value.getInt16(SENSOR_STREAM_HEADER_SIZE + i * 2, true);
+  }
+
+  thermalChunkReceived[packetIndex] = 1;
+  thermalChunksThisFrame += 1;
+
+  const now = performance.now();
+  if (now - lastThermalUiUpdateMs >= 50) {
+    lastThermalUiUpdateMs = now;
+    if (els.thermalChunks) {
+      els.thermalChunks.textContent = `${thermalChunksThisFrame}/${packetCount}`;
+    }
+    if (els.thermalDebugInfo) {
+      els.thermalDebugInfo.textContent =
+        `Frame ${frameSequence}, packet ${packetIndex + 1}/${packetCount}`;
+    }
+    if (els.thermalDropped) {
+      els.thermalDropped.textContent = String(thermalDroppedFrames);
+    }
+  }
+
+  if (thermalChunksThisFrame === packetCount) {
+    if (isBleLogging && els.bleLogThermal?.checked) {
+      bleLogThermalBuffer.push({
+        kind: 'frame',
+        timestamp_us: timestampUs,
+        frame_sequence: frameSequence,
+        rate_hz: bleLogThermalRateHz,
+        pixel_count: THERMAL_NUM_PIXELS,
+        pixels: new Int16Array(thermalFrameRaw)
+      });
+      updateBleLoggerCounters();
+    }
+
+    renderThermalFrame();
+    thermalLastCompletedSequence = frameSequence;
+    resetThermalAssembly();
+    thermalCurrentFrameTime = null;
+    thermalCurrentFrameSequence = null;
+  }
+
+  return `frame=${frameSequence} packet=${packetIndex + 1}/${packetCount} offset=${pixelOffset} pixels=${pixelCount}`;
+}
+
+function decodeImuBatchPacket(value) {
+  if (value.byteLength < SENSOR_STREAM_HEADER_SIZE) {
+    return `short IMU batch ${value.byteLength}B`;
+  }
+
+  const baseTimestampUs = Number(readUint64Le(value, 0));
+  const sequence = value.getUint16(8, true);
+  const packetType = value.getUint8(10);
+  const sampleCount = value.getUint8(11);
+  const itemOffset = value.getUint16(12, true);
+  const packetIndex = value.getUint8(14);
+  const packetCount = value.getUint8(15);
+  const expectedBytes =
+    SENSOR_STREAM_HEADER_SIZE + sampleCount * IMU_STREAM_SAMPLE_SIZE;
+
+  if (packetType !== SENSOR_STREAM_TYPE_IMU_BATCH ||
+      sampleCount === 0 ||
+      sampleCount > IMU_STREAM_BATCH_SAMPLES ||
+      itemOffset !== 0 ||
+      packetIndex !== 0 ||
+      packetCount !== 1 ||
+      value.byteLength !== expectedBytes) {
+    return `bad IMU batch sequence=${sequence} samples=${sampleCount} bytes=${value.byteLength}`;
+  }
+
+  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
+    const recordOffset =
+      SENSOR_STREAM_HEADER_SIZE + sampleIndex * IMU_STREAM_SAMPLE_SIZE;
+    const timestampDeltaUs = value.getUint32(recordOffset, true);
+    const values = [];
+    for (let axis = 0; axis < 9; axis++) {
+      values.push(value.getFloat32(recordOffset + 4 + axis * 4, true));
+    }
+    processImuSample(baseTimestampUs + timestampDeltaUs, values);
+  }
+
+  return `IMU batch sequence=${sequence} samples=${sampleCount}`;
+}
+
+function decodeSensorStreamPacket(value) {
+  if (!value || value.byteLength < SENSOR_STREAM_HEADER_SIZE) {
+    return value ? `short Sensor Stream packet ${value.byteLength}B` : 'empty Sensor Stream packet';
+  }
+
+  const packetType = value.getUint8(10);
+  if (packetType === SENSOR_STREAM_TYPE_THERMAL) {
+    return decodeThermalBlePacket(value);
+  }
+  if (packetType === SENSOR_STREAM_TYPE_IMU_BATCH) {
+    return decodeImuBatchPacket(value);
+  }
+  return `unknown Sensor Stream type=${packetType} bytes=${value.byteLength}`;
+}
+
 function resetThermalValues() {
   thermalFrameRaw.fill(0);
+  thermalPixelsPerChunk = THERMAL_BLE_PIXELS_PER_PACKET;
+  thermalTotalChunks = THERMAL_BLE_PACKETS_PER_FRAME;
   resetThermalAssembly();
   thermalCurrentFrameTime = null;
+  thermalCurrentFrameSequence = null;
+  thermalLastCompletedSequence = null;
   thermalFramesRendered = 0;
   thermalDroppedFrames = 0;
   thermalLastFpsSampleAt = 0;
   thermalFramesAtLastSample = 0;
   thermalNotifyEnabled = false;
-  thermalTdmFrameActive = false;
-  thermalTdmExpectedRow = 0;
   if (els.thermalFrames) els.thermalFrames.textContent = '0';
   if (els.thermalFps) els.thermalFps.textContent = '-';
   if (els.thermalChunks) els.thermalChunks.textContent = `0/${thermalTotalChunks}`;
@@ -1578,17 +2013,16 @@ async function startThermalStream() {
   els.sensorId.value = String(THERMAL_SENSOR_ID);
   els.sampleRateIndex.value = String(sampleRateIndex);
 
-  await ensureTdmNotifications({ reset: lastTdmSeq == null });
-  await setSensorDataNotify(true);
-  thermalNotifyEnabled = true;
+  await setThermalDataNotify(true);
 
   resetThermalAssembly();
   thermalCurrentFrameTime = null;
+  thermalCurrentFrameSequence = null;
 
   const written = await writeSensorConfigPayload(THERMAL_SENSOR_ID, sampleRateIndex, STORAGE_STREAMING);
   if (written) {
     els.thermalState.textContent = `Streaming @ idx ${sampleRateIndex}`;
-    log('Thermal IR stream requested. TDM packets will carry one 32-pixel row per valid slot.');
+    log('Thermal IR stream requested through the shared IR-priority Sensor Stream.');
   }
 }
 
@@ -1596,8 +2030,12 @@ async function stopThermalStream() {
   els.sensorId.value = String(THERMAL_SENSOR_ID);
   els.sampleRateIndex.value = String(THERMAL_SAMPLE_RATE_INDEX);
   await writeSensorConfigPayload(THERMAL_SENSOR_ID, THERMAL_SAMPLE_RATE_INDEX, 0x00);
+  if (!sensorIsStreaming(IMU_SENSOR_ID) &&
+      !isBleLogging &&
+      sensorThermalDataNotifying) {
+    await setThermalDataNotify(false);
+  }
   els.thermalState.textContent = 'Stream off';
-  thermalNotifyEnabled = false;
 }
 
 async function writeRecordingName(prefix) {
@@ -1612,6 +2050,10 @@ async function writeRecordingName(prefix) {
 async function setBleControlOnlyMode() {
   if (sensorDataChar && sensorDataNotifying) {
     await setSensorDataNotify(false);
+  }
+
+  if (sensorThermalDataChar && sensorThermalDataNotifying) {
+    await setThermalDataNotify(false);
   }
 
   if (audioWaveformControlChar) {
@@ -1671,6 +2113,11 @@ async function startSdDataLogger() {
   try {
     await setBleControlOnlyMode();
     await new Promise((resolve) => setTimeout(resolve, 150));
+
+    if (els.sdLogAudio?.checked) {
+      await applyAudioInputConfig({ quiet: true });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
 
     await writeRecordingName(`SD_${Date.now()}_`);
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1746,6 +2193,108 @@ async function waitForBleLoggerOperation() {
   }
 }
 
+function handleThermalData(event) {
+  const value = event.target.value;
+  const packetType = value?.byteLength >= SENSOR_STREAM_HEADER_SIZE
+    ? value.getUint8(10)
+    : 0;
+  const preview = decodeSensorStreamPacket(value);
+  if (packetType === SENSOR_STREAM_TYPE_THERMAL &&
+      (thermalFramesRendered <= 3 || thermalFramesRendered % 25 === 0)) {
+    log(`Sensor Stream IR: ${preview}`);
+  }
+}
+
+function selectedBleLoggerConfigs() {
+  const configs = [];
+  const imuRateIndex = Math.max(
+    0,
+    Math.min(IMU_RATE_HZ.length - 1,
+      Number.parseInt(els.bleImuRateIndex?.value ?? '0', 10) || 0)
+  );
+  const thermalRateIndex = Math.max(
+    0,
+    Math.min(THERMAL_RATE_HZ.length - 1,
+      Number.parseInt(els.bleThermalRateIndex?.value ?? '0', 10) || 0)
+  );
+
+  if (els.bleLogImu?.checked) {
+    configs.push([IMU_SENSOR_ID, imuRateIndex, STORAGE_STREAMING]);
+  }
+  if (els.bleLogThermal?.checked) {
+    configs.push([THERMAL_SENSOR_ID, thermalRateIndex, STORAGE_STREAMING]);
+  }
+  if (els.bleLogAudio?.checked) {
+    configs.push([MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, STORAGE_STREAMING]);
+  }
+  return configs;
+}
+
+function sensorIsStreaming(sensorId) {
+  const config = activeSensorConfigs.get(sensorId);
+  return Boolean(config && (config.storageOptions & STORAGE_STREAMING));
+}
+
+function estimateBleLoggerNotificationsPerSecond(configs) {
+  let notifications = 0;
+  for (const [sensorId, rateIndex] of configs) {
+    if (sensorId === MICROPHONE_SENSOR_ID) {
+      notifications += 1000000 / TDM_PACKET_PERIOD_US;
+    } else if (sensorId === IMU_SENSOR_ID) {
+      notifications +=
+        (IMU_RATE_HZ[rateIndex] ?? 0) / IMU_STREAM_BATCH_SAMPLES;
+    } else if (sensorId === THERMAL_SENSOR_ID) {
+      notifications += (THERMAL_RATE_HZ[rateIndex] ?? 0) *
+        THERMAL_BLE_PACKETS_PER_FRAME;
+    }
+  }
+  return notifications;
+}
+
+async function rollbackBleLoggerStart() {
+  if (bleLoggerStartedAudioNotifications && audioWaveformDataChar && audioWaveformNotifying) {
+    try {
+      if (audioWaveformControlChar) {
+        await gattWriteValue(audioWaveformControlChar, new Uint8Array([0x00]));
+      }
+      await gattStopNotifications(audioWaveformDataChar, handleAudioWaveformData);
+      audioWaveformNotifying = false;
+    } catch {}
+  }
+
+  if (bleLoggerStartedSensorNotifications && sensorDataNotifying) {
+    try {
+      await setSensorDataNotify(false);
+    } catch {}
+  }
+
+  if (bleLoggerStartedThermalNotifications && sensorThermalDataNotifying) {
+    try {
+      await setThermalDataNotify(false);
+    } catch {}
+  }
+
+  for (const [sensorId, rateIndex] of bleLoggerOwnedSensors) {
+    const previous = bleLoggerPreviousConfigs.get(sensorId);
+    if (previous) {
+      await writeSensorConfigPayload(
+        sensorId,
+        previous.sampleRateIndex,
+        previous.storageOptions
+      );
+    } else {
+      await writeSensorConfigPayload(sensorId, rateIndex, 0x00);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  bleLoggerOwnedSensors.clear();
+  bleLoggerPreviousConfigs.clear();
+  bleLoggerStartedSensorNotifications = false;
+  bleLoggerStartedThermalNotifications = false;
+  bleLoggerStartedAudioNotifications = false;
+}
+
 async function startBleDataLogger() {
   if (!sensorConfigChar) {
     log('Sensor config characteristic unavailable');
@@ -1766,18 +2315,22 @@ async function startBleDataLogger() {
   bleLogImuBuffer = [];
   bleLogThermalBuffer = [];
   bleLogDroppedCount = 0;
+  bleLogAudioMissingCount = 0;
+  bleLogImuMissingCount = 0;
+  bleLogThermalMissingCount = 0;
+  lastBleLogImuTimestampUs = null;
+  bleLogImuRateHz = 100;
+  bleLogThermalRateHz = 8;
   bleLogStartTime = Date.now();
+  lastBleLoggerCounterUpdateMs = 0;
+  updateBleLoggerCounters(true);
+  bleLoggerOwnedSensors.clear();
+  bleLoggerPreviousConfigs.clear();
+  bleLoggerStartedSensorNotifications = false;
+  bleLoggerStartedThermalNotifications = false;
+  bleLoggerStartedAudioNotifications = false;
 
-  const configs = [];
-  if (els.bleLogImu?.checked) {
-    configs.push([IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, STORAGE_STREAMING]);
-  }
-  if (els.bleLogThermal?.checked) {
-    configs.push([THERMAL_SENSOR_ID, THERMAL_SAMPLE_RATE_INDEX, STORAGE_STREAMING]);
-  }
-  if (els.bleLogAudio?.checked) {
-    configs.push([MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, STORAGE_STREAMING]);
-  }
+  const configs = selectedBleLoggerConfigs();
 
   if (configs.length === 0) {
     els.bleLoggerState.textContent = 'No sensors selected';
@@ -1785,30 +2338,108 @@ async function startBleDataLogger() {
     if (els.startBleLoggerBtn) els.startBleLoggerBtn.disabled = !server?.connected;
     return;
   }
+  if (els.bleLogAudio?.checked &&
+      (!audioWaveformControlChar || !audioWaveformDataChar)) {
+    els.bleLoggerState.textContent = 'Audio channel unavailable';
+    bleLoggerOperation = null;
+    if (els.startBleLoggerBtn) els.startBleLoggerBtn.disabled = !server?.connected;
+    return;
+  }
+  if ((els.bleLogImu?.checked || els.bleLogThermal?.checked) &&
+      !sensorThermalDataChar) {
+    els.bleLoggerState.textContent = 'Sensor Stream unavailable';
+    bleLoggerOperation = null;
+    if (els.startBleLoggerBtn) els.startBleLoggerBtn.disabled = !server?.connected;
+    return;
+  }
 
   try {
-    const needTdm = configs.length > 0;
-    if (needTdm && !audioWaveformNotifying) {
-      audioWindowAssembly = null;
-      await ensureTdmNotifications({ reset: true });
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    let activeCount = 0;
+    let reusedCount = 0;
+    const effectiveConfigs = [];
 
-    let successCount = 0;
     for (const [sensorId, rateIndex, storageOptions] of configs) {
+      const existing = activeSensorConfigs.get(sensorId);
+      if (sensorIsStreaming(sensorId) &&
+          existing?.sampleRateIndex === rateIndex) {
+        activeCount += 1;
+        reusedCount += 1;
+        effectiveConfigs.push([
+          sensorId,
+          existing?.sampleRateIndex ?? rateIndex,
+          existing?.storageOptions ?? storageOptions
+        ]);
+        continue;
+      }
+
+      if (sensorIsStreaming(sensorId) && existing) {
+        bleLoggerPreviousConfigs.set(sensorId, { ...existing });
+      }
+
+      if (sensorId === MICROPHONE_SENSOR_ID) {
+        await applyAudioInputConfig({ quiet: true });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
       const ok = await writeSensorConfigPayload(sensorId, rateIndex, storageOptions);
-      if (ok) successCount++;
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      if (ok) {
+        activeCount += 1;
+        bleLoggerOwnedSensors.set(sensorId, rateIndex);
+        effectiveConfigs.push([sensorId, rateIndex, storageOptions]);
+      } else {
+        bleLoggerPreviousConfigs.delete(sensorId);
+      }
+      /* Give the firmware config worker time to stop/start this sensor before
+       * sending the next command. The worker also drains queued commands.
+       */
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
 
-    if (successCount === 0) {
+    if (activeCount === 0) {
       els.bleLoggerState.textContent = 'Start failed';
-      log('BLE data logger failed: no sensor config accepted');
+      log('BLE data logger failed: no selected sensor is streaming');
       return;
     }
 
+    for (const [sensorId, rateIndex] of effectiveConfigs) {
+      if (sensorId === IMU_SENSOR_ID) {
+        bleLogImuRateHz = IMU_RATE_HZ[rateIndex] ?? 100;
+      } else if (sensorId === THERMAL_SENSOR_ID) {
+        bleLogThermalRateHz = THERMAL_RATE_HZ[rateIndex] ?? 8;
+      }
+    }
+
+    if (els.bleLogImu?.checked || els.bleLogThermal?.checked) {
+      if (els.bleLogThermal?.checked) {
+        resetThermalAssembly();
+        thermalCurrentFrameTime = null;
+        thermalCurrentFrameSequence = null;
+        thermalLastCompletedSequence = null;
+      }
+      if (!sensorThermalDataNotifying) {
+        bleLoggerStartedThermalNotifications = true;
+      }
+      await setThermalDataNotify(true);
+    }
+
+    if (els.bleLogAudio?.checked) {
+      if (!audioWaveformNotifying) {
+        bleLoggerStartedAudioNotifications = true;
+      }
+      audioWindowAssembly = null;
+      /* Always reset the firmware PCM ring at logger start. This removes
+       * pre-session audio backlog and aligns the first Audio timestamp with
+       * the IMU/IR recording interval.
+       */
+      await ensureTdmNotifications({ reset: true });
+    }
+
     isBleLogging = true;
-    if (els.bleLoggerState) els.bleLoggerState.textContent = 'Recording to Memory';
+    if (els.bleLoggerState) {
+      els.bleLoggerState.textContent = activeCount === configs.length
+        ? 'Recording to Memory'
+        : `Recording ${activeCount}/${configs.length} sensors`;
+    }
     if (els.bleLogDuration) els.bleLogDuration.textContent = '0.0s';
     if (els.bleLogDropped) els.bleLogDropped.textContent = '0';
     if (els.stopBleLoggerBtn) els.stopBleLoggerBtn.disabled = false;
@@ -1820,11 +2451,21 @@ async function startBleDataLogger() {
       }
     }, 100);
 
-    log('BLE data logger started', { successCount, total: configs.length });
+    const estimatedNotifications = estimateBleLoggerNotificationsPerSecond(effectiveConfigs);
+    log('BLE data logger started', {
+      active: activeCount,
+      reused: reusedCount,
+      started: bleLoggerOwnedSensors.size,
+      estimatedNotificationsPerSecond: Math.round(estimatedNotifications)
+    });
+    if (estimatedNotifications > 300) {
+      log('BLE traffic is high. Reduce IMU or IR rate if Windows reports packet loss.');
+    }
   } catch (err) {
     isBleLogging = false;
     els.bleLoggerState.textContent = 'Start failed';
     log(`BLE data logger error: ${err.message}`);
+    await rollbackBleLoggerStart();
   } finally {
     bleLoggerOperation = null;
     if (els.startBleLoggerBtn) els.startBleLoggerBtn.disabled = !server?.connected || isBleLogging;
@@ -1836,35 +2477,64 @@ async function stopBleDataLogger() {
   bleLoggerOperation = 'stopping';
   if (els.stopBleLoggerBtn) els.stopBleLoggerBtn.disabled = true;
 
-  const stopConfigs = [
-    [IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, 0x00],
-    [THERMAL_SENSOR_ID, THERMAL_SAMPLE_RATE_INDEX, 0x00],
-    [MICROPHONE_SENSOR_ID, MICROPHONE_SAMPLE_RATE_INDEX, 0x00]
-  ];
-
   try {
-    for (const [sensorId, rateIndex, storageOptions] of stopConfigs) {
-      await writeSensorConfigPayload(sensorId, rateIndex, storageOptions);
-      await new Promise((resolve) => setTimeout(resolve, 80));
-    }
-
-    if (audioWaveformNotifying) {
-      await stopAudioWaveform();
-    }
-
-    isBleLogging = false;
     if (bleLogTimer) {
       clearInterval(bleLogTimer);
       bleLogTimer = null;
     }
 
+    /*
+     * Stop or restore owned sensors while notifications and logging are still
+     * active. Firmware can then flush a partial five-sample IMU batch before
+     * the shared Sensor Stream subscription is removed.
+     */
+    for (const [sensorId, rateIndex] of bleLoggerOwnedSensors) {
+      const previous = bleLoggerPreviousConfigs.get(sensorId);
+      if (previous) {
+        await writeSensorConfigPayload(
+          sensorId,
+          previous.sampleRateIndex,
+          previous.storageOptions
+        );
+      } else {
+        await writeSensorConfigPayload(sensorId, rateIndex, 0x00);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    isBleLogging = false;
+
+    if (bleLoggerStartedAudioNotifications && audioWaveformDataChar && audioWaveformNotifying) {
+      if (audioWaveformControlChar) {
+        await gattWriteValue(audioWaveformControlChar, new Uint8Array([0x00]));
+      }
+      await gattStopNotifications(audioWaveformDataChar, handleAudioWaveformData);
+      audioWaveformNotifying = false;
+    }
+
+    if (bleLoggerStartedSensorNotifications && sensorDataNotifying) {
+      await setSensorDataNotify(false);
+    }
+
+    if (bleLoggerStartedThermalNotifications && sensorThermalDataNotifying) {
+      await setThermalDataNotify(false);
+    }
+
     const hasData = bleLogAudioBuffer.length > 0 || bleLogImuBuffer.length > 0 || bleLogThermalBuffer.length > 0;
+    updateBleLoggerCounters(true);
     if (els.bleLoggerState) els.bleLoggerState.textContent = 'Idle';
     if (els.downloadBleLogBtn) els.downloadBleLogBtn.disabled = !hasData;
     log('BLE data logger stopped');
   } catch (error) {
+    isBleLogging = false;
     log(`BLE logger stop failed: ${error.message}`);
   } finally {
+    bleLoggerOwnedSensors.clear();
+    bleLoggerPreviousConfigs.clear();
+    bleLoggerStartedSensorNotifications = false;
+    bleLoggerStartedThermalNotifications = false;
+    bleLoggerStartedAudioNotifications = false;
     bleLoggerOperation = null;
     if (els.startBleLoggerBtn) els.startBleLoggerBtn.disabled = !server?.connected;
     if (els.stopBleLoggerBtn) els.stopBleLoggerBtn.disabled = isBleLogging;
@@ -1875,19 +2545,34 @@ function downloadBleLogCSV() {
   if (bleLogAudioBuffer.length === 0 && bleLogImuBuffer.length === 0 && bleLogThermalBuffer.length === 0) {
     return;
   }
-  
-  let csvContent = "timestamp_ms,type,data...\n";
-  
+
+  const rows = [];
   for (const item of bleLogImuBuffer) {
-    csvContent += `${item.timestamp_ms},IMU,${item.ax},${item.ay},${item.az},${item.gx},${item.gy},${item.gz},${item.mx},${item.my},${item.mz}\n`;
+    rows.push({
+      timestamp_us: item.timestamp_us,
+      csv: `${item.timestamp_us},IMU,9_axis_float32;rate_hz=${item.rate_hz},${item.ax},${item.ay},${item.az},${item.gx},${item.gy},${item.gz},${item.mx},${item.my},${item.mz}`
+    });
   }
   for (const item of bleLogAudioBuffer) {
-    csvContent += `${item.timestamp_ms},AUDIO,${item.samples.join(',')}\n`;
+    rows.push({
+      timestamp_us: item.timestamp_us,
+      csv: `${item.timestamp_us},AUDIO,pcm16_16k_120_samples;raw_u32_us=${item.raw_timestamp_u32_us};missing_samples=${item.missing_samples},${item.samples.join(',')}`
+    });
   }
   for (const item of bleLogThermalBuffer) {
-    csvContent += `${item.timestamp_ms},THERMAL,ROW${item.row},${item.pixels.join(',')}\n`;
+    const format = item.kind === 'frame'
+      ? `raw_int16_frame_32x24;frame_sequence=${item.frame_sequence};rate_hz=${item.rate_hz};pixel_count=${item.pixel_count}`
+      : `raw_int16_chunk;chunk_index=${item.chunk_index};pixel_count=${item.pixel_count}`;
+    rows.push({
+      timestamp_us: item.timestamp_us,
+      csv: `${item.timestamp_us},IR,${format},${item.pixels.join(',')}`
+    });
   }
-  
+
+  rows.sort((a, b) => a.timestamp_us - b.timestamp_us);
+  const csvContent =
+    `timestamp_us,type,format,data...\n${rows.map((row) => row.csv).join('\n')}\n`;
+
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
   const link = document.createElement("a");
   const url = URL.createObjectURL(blob);
@@ -1913,160 +2598,128 @@ function decodeSensorConfigStatus(value) {
     const sensorId = value.getUint8(offset);
     const sampleRateIndex = value.getUint8(offset + 1);
     const storageOptions = value.getUint8(offset + 2);
+    if (storageOptions === 0) {
+      activeSensorConfigs.delete(sensorId);
+    } else {
+      activeSensorConfigs.set(sensorId, { sampleRateIndex, storageOptions });
+    }
     configs.push(`${SENSOR_NAMES.get(sensorId) || sensorId}:rate=${sampleRateIndex},storage=0x${storageOptions.toString(16).padStart(2, '0')}`);
   }
   return configs.join(' | ');
 }
 
-function decodeTdmImuSlot(value, timestampMs) {
-  const imuLen = value.getUint8(TDM_IMU_LEN_OFFSET);
-  if (imuLen !== TDM_IMU_BYTES) {
-    return 'imu=hold';
-  }
+function unwrapAudioTimestampUs(rawTimestampUs) {
+  const UINT32_RANGE_US = 0x100000000;
 
-  const raw = [];
-  for (let i = 0; i < 9; i++) {
-    raw.push(value.getInt16(TDM_IMU_OFFSET + i * 2, true));
-  }
-
-  const ax = raw[0] * TDM_ACCEL_SCALE_MPS2_PER_LSB;
-  const ay = raw[1] * TDM_ACCEL_SCALE_MPS2_PER_LSB;
-  const az = raw[2] * TDM_ACCEL_SCALE_MPS2_PER_LSB;
-  const gx = raw[3] * TDM_GYRO_SCALE_DPS_PER_LSB;
-  const gy = raw[4] * TDM_GYRO_SCALE_DPS_PER_LSB;
-  const gz = raw[5] * TDM_GYRO_SCALE_DPS_PER_LSB;
-  const mx = raw[6] * TDM_MAG_SCALE_UT_PER_LSB;
-  const my = raw[7] * TDM_MAG_SCALE_UT_PER_LSB;
-  const mz = raw[8] * TDM_MAG_SCALE_UT_PER_LSB;
-
-  els.imuTime.textContent = `${timestampMs} ms`;
-  els.imuAx.textContent = formatNumber(ax);
-  els.imuAy.textContent = formatNumber(ay);
-  els.imuAz.textContent = formatNumber(az);
-  els.imuGx.textContent = formatNumber(gx);
-  els.imuGy.textContent = formatNumber(gy);
-  els.imuGz.textContent = formatNumber(gz);
-  els.imuMx.textContent = formatNumber(mx);
-  els.imuMy.textContent = formatNumber(my);
-  els.imuMz.textContent = formatNumber(mz);
-
-  if (isBleLogging && els.bleLogImu?.checked) {
-    bleLogImuBuffer.push({ timestamp_ms: timestampMs, ax, ay, az, gx, gy, gz, mx, my, mz });
-    if (els.bleLogImuCount) els.bleLogImuCount.textContent = bleLogImuBuffer.length;
-  }
-
-  return `imu=[${raw.join(',')}]`;
-}
-
-function decodeTdmThermalSlot(value, timestampMs) {
-  const thermalLen = value.getUint8(TDM_THERMAL_LEN_OFFSET);
-  if (thermalLen !== TDM_THERMAL_BYTES) {
-    return 'thermal=0';
-  }
-
-  const row = value.getUint8(TDM_THERMAL_ROW_OFFSET);
-  if (row >= THERMAL_NUM_ROWS) {
-    thermalDroppedFrames += 1;
-    thermalTdmFrameActive = false;
-    thermalTdmExpectedRow = 0;
-    if (els.thermalDropped) els.thermalDropped.textContent = String(thermalDroppedFrames);
-    if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `Bad TDM row ${row}`;
-    return `thermalBadRow=${row}`;
-  }
-
-  if (row === 0) {
-    resetThermalAssembly();
-    thermalCurrentFrameTime = timestampMs * 1000;
-    thermalTdmFrameActive = true;
-    thermalTdmExpectedRow = 0;
-  } else if (!thermalTdmFrameActive) {
-    thermalDroppedFrames += 1;
-    thermalTdmExpectedRow = 0;
-    if (els.thermalDropped) els.thermalDropped.textContent = String(thermalDroppedFrames);
-    if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `Waiting for TDM row 0, dropped row ${row}`;
-    return `thermalWaitingRow0=${row}`;
-  }
-
-  if (row !== thermalTdmExpectedRow) {
-    const expected = thermalTdmExpectedRow;
-    thermalDroppedFrames += 1;
-    resetThermalAssembly();
-    thermalTdmFrameActive = false;
-    thermalTdmExpectedRow = 0;
-    thermalCurrentFrameTime = null;
-    if (els.thermalDropped) els.thermalDropped.textContent = String(thermalDroppedFrames);
-    if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `TDM row jump ${row}, expected ${expected}`;
-    return `thermalRowJump=${row}/${expected}`;
-  }
-
-  for (let col = 0; col < THERMAL_NUM_COLS; col++) {
-    thermalFrameRaw[row * THERMAL_NUM_COLS + col] =
-      value.getInt16(TDM_THERMAL_OFFSET + col * 2, false);
-  }
-
-  if (!thermalChunkReceived[row]) {
-    thermalChunkReceived[row] = 1;
-    thermalChunksThisFrame += 1;
-  }
-
-  thermalTdmExpectedRow += 1;
-  if (els.thermalChunks) els.thermalChunks.textContent = `${thermalChunksThisFrame}/${THERMAL_NUM_ROWS}`;
-  if (els.thermalDebugInfo) els.thermalDebugInfo.textContent = `TDM row ${row + 1}/${THERMAL_NUM_ROWS}`;
-  if (els.thermalState) els.thermalState.textContent = 'Receiving TDM rows';
-
-  if (thermalChunksThisFrame >= THERMAL_NUM_ROWS) {
-    if (isBleLogging && els.bleLogThermal?.checked) {
-      bleLogThermalBuffer.push({ timestamp_ms: timestampMs, row, pixels: Array.from(thermalFrameRaw) });
-      if (els.bleLogThermalCount) els.bleLogThermalCount.textContent = bleLogThermalBuffer.length;
+  if (lastTdmUnwrappedTimestampUs !== null &&
+      lastTdmFirstSampleTimestampUs !== null) {
+    const deltaUs = (rawTimestampUs - lastTdmFirstSampleTimestampUs) >>> 0;
+    if (deltaUs <= 1000000) {
+      const continuous = lastTdmUnwrappedTimestampUs + deltaUs;
+      if (latestSensorTimestampUs === null ||
+          Math.abs(continuous - latestSensorTimestampUs) <= UINT32_RANGE_US / 2) {
+        return continuous;
+      }
     }
-    
-    renderThermalFrame();
-    resetThermalAssembly();
-    thermalTdmFrameActive = false;
-    thermalTdmExpectedRow = 0;
-    thermalCurrentFrameTime = null;
   }
 
-  return `thermalRow=${row}`;
+  if (latestSensorTimestampUs !== null) {
+    const base = Math.floor(latestSensorTimestampUs / UINT32_RANGE_US) * UINT32_RANGE_US;
+    const candidates = [
+      base + rawTimestampUs,
+      base - UINT32_RANGE_US + rawTimestampUs,
+      base + UINT32_RANGE_US + rawTimestampUs
+    ];
+    return candidates.reduce((best, candidate) =>
+      Math.abs(candidate - latestSensorTimestampUs) <
+      Math.abs(best - latestSensorTimestampUs) ? candidate : best);
+  }
+
+  return rawTimestampUs;
 }
 
 function decodeTdmStreamPacket(value) {
-  const seq = value.getUint8(0);
-  const timestampMs = value.getUint32(1, false);
-  let droppedNow = 0;
+  const firstSampleTimestampUs = value.getUint32(TDM_TIMESTAMP_OFFSET, true);
+  const unwrappedTimestampUs = unwrapAudioTimestampUs(firstSampleTimestampUs);
+  const arrivalMs = performance.now();
+  let sampleTimestampDeltaUs = null;
+  let timestampJitterUs = null;
+  let arrivalDeltaMs = null;
+  let arrivalJitterMs = null;
+  let missingSamples = 0;
 
-  if (lastTdmSeq !== null) {
-    droppedNow = (seq - lastTdmSeq - 1 + 256) & 0xff;
-    if (droppedNow > 0) {
-      tdmDroppedPackets += droppedNow;
+  if (lastTdmFirstSampleTimestampUs !== null) {
+    sampleTimestampDeltaUs =
+      (firstSampleTimestampUs - lastTdmFirstSampleTimestampUs) >>> 0;
+
+    // A very large unsigned delta means the device restarted or the stream
+    // was reset. Do not synthesize seconds of audio across that boundary.
+    if (sampleTimestampDeltaUs <= 1000000) {
+      timestampJitterUs = sampleTimestampDeltaUs - TDM_PACKET_PERIOD_US;
+      if (timestampJitterUs > 0) {
+        missingSamples = Math.max(
+          0,
+          Math.round(timestampJitterUs * TDM_SAMPLE_RATE_HZ / 1000000)
+        );
+      }
+      if (timestampJitterUs !== 0) {
+        tdmTimestampJitterEvents += 1;
+        tdmTimestampMaxAbsJitterUs = Math.max(
+          tdmTimestampMaxAbsJitterUs,
+          Math.abs(timestampJitterUs)
+        );
+      }
+    } else {
+      sampleTimestampDeltaUs = null;
     }
   }
-  lastTdmSeq = seq;
 
-  const micLenRaw = value.getUint8(5);
-  const micLen = Math.min(micLenRaw & 0xfe, TDM_MIC_BYTES);
-  const micSamples = [];
-  for (let offset = 0; offset < micLen; offset += 2) {
-    micSamples.push(value.getInt16(TDM_MIC_OFFSET + offset, true));
+  if (lastTdmArrivalMs !== null) {
+    arrivalDeltaMs = arrivalMs - lastTdmArrivalMs;
+    arrivalJitterMs = arrivalDeltaMs - TDM_PACKET_PERIOD_MS;
+    tdmArrivalMaxAbsJitterMs = Math.max(
+      tdmArrivalMaxAbsJitterMs,
+      Math.abs(arrivalJitterMs)
+    );
   }
 
-  const thermalText = decodeTdmThermalSlot(value, timestampMs);
-  const imuText = decodeTdmImuSlot(value, timestampMs);
-  const thermalLen = value.getUint8(TDM_THERMAL_LEN_OFFSET);
-  const imuLen = value.getUint8(TDM_IMU_LEN_OFFSET);
+  lastTdmFirstSampleTimestampUs = firstSampleTimestampUs;
+  lastTdmUnwrappedTimestampUs = unwrappedTimestampUs;
+  lastTdmArrivalMs = arrivalMs;
+  tdmPacketCount += 1;
 
-  els.audioSeq.textContent = String(seq);
-  els.audioRate.textContent = `${TDM_SAMPLE_RATE_HZ} Hz PCM / ${formatFrequency(TDM_SAMPLE_RATE_HZ)} plot`;
-  els.audioSampleInterval.textContent = `${(1000000 / TDM_SAMPLE_RATE_HZ).toFixed(2)} us`;
-  els.audioFrames.textContent = `${micSamples.length}/${TDM_MIC_BYTES / 2} samples, ${TDM_PACKET_PERIOD_MS} ms slot`;
-  els.audioPacketInfo.textContent =
-    `TDM ${value.byteLength} B, mic=${micLen}/${TDM_MIC_BYTES}, thermal=${thermalLen}/${TDM_THERMAL_BYTES}, imu=${imuLen}/${TDM_IMU_BYTES}, dropped=${tdmDroppedPackets}`;
-
-  if (droppedNow > 0) {
-    els.audioFrequencyConfidence.textContent = `packet loss +${droppedNow}, total ${tdmDroppedPackets}`;
+  const droppedPacketEquivalent = Math.ceil(missingSamples / TDM_MIC_SAMPLES);
+  if (missingSamples > 0) {
+    tdmDroppedSamples += missingSamples;
+    tdmDroppedPackets += droppedPacketEquivalent;
   }
 
-  if (micSamples.length > 0) {
+  const micSamples = new Int16Array(TDM_MIC_SAMPLES);
+  let sampleIndex = 0;
+  for (let offset = 0; offset < TDM_MIC_BYTES; offset += 2) {
+    micSamples[sampleIndex++] = value.getInt16(TDM_MIC_OFFSET + offset, true);
+  }
+
+  const updateAudioUi = arrivalMs - lastAudioUiUpdateMs >= 33;
+  lastAudioSamples = micSamples;
+  lastAudioDurationMs = TDM_PACKET_PERIOD_MS;
+  lastAudioPointRate = TDM_SAMPLE_RATE_HZ;
+
+  if (updateAudioUi) {
+    lastAudioUiUpdateMs = arrivalMs;
+    els.audioSeq.textContent = String(tdmPacketCount);
+    els.audioRate.textContent = `${TDM_SAMPLE_RATE_HZ} Hz PCM / ${formatFrequency(TDM_SAMPLE_RATE_HZ)} plot`;
+    els.audioSampleInterval.textContent = `${(1000000 / TDM_SAMPLE_RATE_HZ).toFixed(2)} us`;
+    els.audioFrames.textContent = `${micSamples.length}/${TDM_MIC_SAMPLES} samples, ${TDM_PACKET_PERIOD_MS} ms slot`;
+    const timestampInfo = sampleTimestampDeltaUs === null
+      ? 'sampleDt=-'
+      : `sampleDt=${sampleTimestampDeltaUs}us sampleJitter=${timestampJitterUs >= 0 ? '+' : ''}${timestampJitterUs}us`;
+    const arrivalInfo = arrivalDeltaMs === null
+      ? 'arrivalDt=-'
+      : `arrivalDt=${arrivalDeltaMs.toFixed(2)}ms arrivalJitter=${arrivalJitterMs >= 0 ? '+' : ''}${arrivalJitterMs.toFixed(2)}ms`;
+    els.audioPacketInfo.textContent =
+      `PCM ${value.byteLength} B, samples=${micSamples.length}, missingSamples=${tdmDroppedSamples}, packetEq=${tdmDroppedPackets}, ${timestampInfo}, ${arrivalInfo}, sampleJitterEvents=${tdmTimestampJitterEvents}, sampleJitterMax=${tdmTimestampMaxAbsJitterUs}us, arrivalJitterMax=${tdmArrivalMaxAbsJitterMs.toFixed(2)}ms`;
+
     let peak = 0;
     let sumAbs = 0;
     for (const sample of micSamples) {
@@ -2085,51 +2738,52 @@ function decodeTdmStreamPacket(value) {
     els.audioFrequency.textContent = formatFrequency(frequency.hz);
     els.audioSamplesPerCycle.textContent = Number.isFinite(samplesPerCycle) ? `${samplesPerCycle.toFixed(2)} pts` : '-';
     els.audioPeakToPeak.textContent = `${p2p} raw`;
-    if (droppedNow === 0) {
-      els.audioFrequencyConfidence.textContent = frequency.detail;
-    }
-    els.audioWaveState.textContent = `Receiving ${TDM_PACKET_SIZE} B TDM stream`;
+    els.audioFrequencyConfidence.textContent = missingSamples > 0
+      ? `sample loss +${missingSamples}, total ${tdmDroppedSamples}`
+      : frequency.detail;
+    els.audioWaveState.textContent = `Receiving ${TDM_PACKET_SIZE} B PCM stream`;
 
     audioPeakHistory.push(peak);
     if (audioPeakHistory.length > AUDIO_PEAK_HISTORY_LIMIT) {
       audioPeakHistory.shift();
     }
-
-    lastAudioSamples = micSamples;
     lastAudioPeak = peak;
-    lastAudioDurationMs = (micSamples.length / TDM_SAMPLE_RATE_HZ) * 1000;
-    lastAudioPointRate = TDM_SAMPLE_RATE_HZ;
-
-    if (isRecordingAudio) {
-      appendRecordedTdmSamples(timestampMs, micSamples, droppedNow);
-      const recordedSecs = (recordedAudioBuffer.length / TDM_SAMPLE_RATE_HZ).toFixed(1);
-      els.recordStatus.textContent = `${recordedSecs}s`;
-      els.playAudioBtn.disabled = false;
-    }
-
-    if (isBleLogging && els.bleLogAudio?.checked) {
-      if (droppedNow > 0) {
-        bleLogDroppedCount += droppedNow;
-        if (els.bleLogDropped) els.bleLogDropped.textContent = String(bleLogDroppedCount);
-      }
-      bleLogAudioBuffer.push({ timestamp_ms: timestampMs, samples: micSamples, dropped_packets: droppedNow });
-      if (els.bleLogAudioCount) els.bleLogAudioCount.textContent = String(bleLogAudioBuffer.length);
-    }
 
     drawAudioWaveform(lastAudioSamples, {
       peak,
       durationMs: lastAudioDurationMs,
       pointRate: TDM_SAMPLE_RATE_HZ,
       sampleRate: TDM_SAMPLE_RATE_HZ,
-      formatLabel: 'tdm pcm16'
+      formatLabel: 'pcm16'
     });
-  } else {
-    els.audioWaveState.textContent = 'TDM active, mic slot empty';
+
+    els.lastSensor.textContent = 'Audio PCM';
+    els.lastPayload.textContent = `${value.byteLength} B`;
   }
 
-  els.lastSensor.textContent = 'TDM composite';
-  els.lastPayload.textContent = `${value.byteLength} B`;
-  return `seq=${seq} t=${timestampMs}ms mic=${micLen}B thermal=${thermalLen}B imu=${imuLen}B drop=${tdmDroppedPackets} ${thermalText} ${imuText}`;
+  if (isRecordingAudio) {
+    appendRecordedTdmSamples(micSamples, missingSamples);
+    if (updateAudioUi) {
+      const recordedSecs = (recordedAudioBuffer.length / TDM_SAMPLE_RATE_HZ).toFixed(1);
+      els.recordStatus.textContent = `${recordedSecs}s`;
+    }
+    els.playAudioBtn.disabled = false;
+  }
+
+  if (isBleLogging && els.bleLogAudio?.checked) {
+    if (missingSamples > 0) {
+      bleLogAudioMissingCount += droppedPacketEquivalent;
+      bleLogDroppedCount += droppedPacketEquivalent;
+    }
+    bleLogAudioBuffer.push({
+      timestamp_us: unwrappedTimestampUs,
+      raw_timestamp_u32_us: firstSampleTimestampUs,
+      samples: micSamples,
+      missing_samples: missingSamples
+    });
+    updateBleLoggerCounters();
+  }
+  return `packet=${tdmPacketCount} firstSample=${firstSampleTimestampUs}us samples=${micSamples.length} missing=${missingSamples}`;
 }
 
 function decodeAudioWaveformPacket(value) {
@@ -2614,11 +3268,6 @@ els.stopImuBtn.addEventListener('click', stopImuStream);
 els.startAudioWaveBtn.addEventListener('click', startAudioWaveform);
 els.stopAudioWaveBtn.addEventListener('click', stopAudioWaveform);
 els.readAudioWaveBtn.addEventListener('click', readAudioWaveform);
-els.audioWindowMode.addEventListener('change', () => {
-  updateAudioWaveformWindow().catch((error) => {
-    log(`Audio waveform window update failed: ${error.message}`);
-  });
-});
 els.enableSensorBtn.addEventListener('click', () => writeSensorConfig(true));
 els.disableSensorBtn.addEventListener('click', () => writeSensorConfig(false));
 els.subscribeSensorBtn.addEventListener('click', toggleSensorDataNotify);
@@ -2685,6 +3334,21 @@ if (els.downloadBleLogBtn) {
   els.downloadBleLogBtn.addEventListener('click', downloadBleLogCSV);
 }
 
+for (const micCheckbox of [els.micMp1Dmic1, els.micMp2Left, els.micMp2Right]) {
+  if (micCheckbox) micCheckbox.addEventListener('change', updateMicControlLabels);
+}
+if (els.micGain) {
+  els.micGain.addEventListener('input', updateMicControlLabels);
+}
+if (els.micNoiseGate) {
+  els.micNoiseGate.addEventListener('input', updateMicControlLabels);
+}
+if (els.applyMicConfigBtn) {
+  els.applyMicConfigBtn.addEventListener('click', () => {
+    applyAudioInputConfig().catch((error) => log(`Mic config failed: ${error.message}`));
+  });
+}
+
 if (els.tabSdLogger && els.tabBleLogger) {
   els.tabSdLogger.addEventListener('click', () => {
     els.tabSdLogger.classList.add('active');
@@ -2704,6 +3368,7 @@ if (els.tabSdLogger && els.tabBleLogger) {
 resetFacts();
 resetAudioWaveformValues();
 resetThermalValues();
+updateMicControlLabels();
 resetHardwareStatusUi('尚未读取');
 setConnectedUi(false);
 checkSupport();
@@ -2737,7 +3402,6 @@ els.recordAudioBtn.addEventListener('click', () => {
     // Start recording
     isRecordingAudio = true;
     recordedAudioBuffer = [];
-    recordedAudioStartMs = null;
     recordedAudioPointRate = TDM_SAMPLE_RATE_HZ;
     els.recordStatus.textContent = '0.0s';
     els.playAudioBtn.disabled = true;

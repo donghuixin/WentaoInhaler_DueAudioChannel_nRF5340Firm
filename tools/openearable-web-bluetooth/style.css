@@ -211,6 +211,58 @@ select:focus, input[type="number"]:focus {
   border-color: var(--accent);
 }
 
+.mic-control-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin: 12px 0;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+}
+
+.mic-control-grid .check-row {
+  min-width: 0;
+}
+
+.mic-control-grid .check-row[hidden] {
+  display: none;
+}
+
+.mic-slider-row {
+  grid-column: span 3;
+  display: grid;
+  grid-template-columns: 84px minmax(120px, 1fr) 72px;
+  gap: 10px;
+}
+
+.mic-slider-row input[type="range"] {
+  width: 100%;
+}
+
+.mic-slider-row strong,
+.mic-route-status strong {
+  color: var(--text-main);
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+}
+
+#applyMicConfigBtn {
+  grid-column: span 2;
+}
+
+.mic-route-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  gap: 10px;
+  color: var(--text-muted);
+}
+
 .sd-logger-panel {
   grid-column: 1 / -1;
 }

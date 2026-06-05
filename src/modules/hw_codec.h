@@ -8,6 +8,7 @@
 #define _HW_CODEC_H_
 
 #include <stdint.h>
+#include <stddef.h>
 #include <zephyr/zbus/zbus.h>
 
 // Audio Mode Options
@@ -16,6 +17,16 @@ enum audio_mode {
     AUDIO_MODE_TRANSPARENCY = 1,
     AUDIO_MODE_ANC = 2
 };
+
+#define HW_CODEC_MIC_MP1_DMIC1       0x01U
+#define HW_CODEC_MIC_MP2_DMIC23_LEFT 0x02U
+#define HW_CODEC_MIC_MP2_DMIC23_RIGHT 0x04U
+#define HW_CODEC_MIC_MASK_VALID      (HW_CODEC_MIC_MP1_DMIC1 | \
+                                      HW_CODEC_MIC_MP2_DMIC23_LEFT | \
+                                      HW_CODEC_MIC_MP2_DMIC23_RIGHT)
+
+#define HW_CODEC_DMIC_GAIN_DEFAULT   0x00U
+#define HW_CODEC_DMIC_GAIN_MAX       0x3FU
 
 #ifdef __cplusplus
 extern "C" {
@@ -118,6 +129,16 @@ int hw_codec_stop_audio(void);
 int hw_codec_set_audio_mode(enum audio_mode mode);
 
 enum audio_mode hw_codec_get_audio_mode();
+
+int hw_codec_set_mic_select(uint8_t mic_mask);
+uint8_t hw_codec_get_mic_select(void);
+
+int hw_codec_set_mic_gain(uint8_t gain_reg);
+uint8_t hw_codec_get_mic_gain(void);
+
+int hw_codec_set_noise_gate_threshold(uint16_t threshold);
+uint16_t hw_codec_get_noise_gate_threshold(void);
+void hw_codec_process_i2s_block(int16_t *samples, size_t frame_count);
 
 #ifdef __cplusplus
 }

@@ -5,8 +5,9 @@
 
 #include "Thermal.h"
 #include "SensorManager.h"
-#include "../bluetooth/gatt_services/audio_waveform_service.h"
+#include "../bluetooth/gatt_services/sensor_service.h"
 
+#include <errno.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
@@ -19,6 +20,14 @@ Thermal Thermal::sensor;
 MLX90642 Thermal::cam;
 
 static struct sensor_msg msg_thermal;
+
+#define THERMAL_WORK_QUEUE_STACK_SIZE 2048U
+#define THERMAL_WORK_QUEUE_PRIORITY 5
+
+static struct k_work_q thermal_work_q;
+static K_THREAD_STACK_DEFINE(thermal_work_q_stack,
+			     THERMAL_WORK_QUEUE_STACK_SIZE);
+static bool thermal_work_q_started;
 
 /* Keep the 1.5 KB raw pixel buffer off the work-queue stack
  * (CONFIG_SENSOR_WORK_QUEUE_STACK_SIZE is only ~1 KB by default).
@@ -65,6 +74,16 @@ bool Thermal::init(struct k_msgq *queue)
 
 	sensor_queue = queue;
 
+	if (!thermal_work_q_started) {
+		k_work_queue_init(&thermal_work_q);
+		k_work_queue_start(&thermal_work_q, thermal_work_q_stack,
+				   K_THREAD_STACK_SIZEOF(thermal_work_q_stack),
+				   K_PRIO_PREEMPT(THERMAL_WORK_QUEUE_PRIORITY),
+				   NULL);
+		(void)k_thread_name_set(&thermal_work_q.thread, "THERMAL_SAMPLE");
+		thermal_work_q_started = true;
+	}
+
 	k_work_init(&sensor.sensor_work, update_sensor);
 	k_timer_init(&sensor.sensor_timer, sensor_timer_handler, NULL);
 
@@ -87,15 +106,21 @@ void Thermal::update_sensor(struct k_work *work)
 
 	const uint64_t frame_time = micros();
 
+	if (!sensor._sd_logging && !sensor._ble_stream) {
+		return;
+	}
+
 	if (sensor._ble_stream) {
-		for (uint8_t row = 0; row < MLX90642_NUM_ROWS; row++) {
-			const uint16_t offset = (uint16_t)row * MLX90642_NUM_COLS;
-			audio_waveform_service_submit_thermal_row(&s_frame_pixels[offset],
-								  MLX90642_NUM_COLS,
-								  row);
+		const int ble_ret = sensor_service_submit_thermal_frame(
+			s_frame_pixels, MLX90642_NUM_PIXELS, frame_time);
+		if ((ble_ret != 0) && (ble_ret != -EACCES)) {
+			LOG_WRN("Thermal BLE frame dropped: %d", ble_ret);
 		}
 	}
 
+	/* BLE uses the shared 244-byte Sensor Stream characteristic. Keep the
+	 * legacy 16-pixel messages only for the SD CSV writer.
+	 */
 	if (!sensor._sd_logging) {
 		return;
 	}
@@ -106,7 +131,7 @@ void Thermal::update_sensor(struct k_work *work)
 			(uint16_t)THERMAL_PIXELS_PER_CHUNK,
 			(uint16_t)(MLX90642_NUM_PIXELS - offset));
 
-		msg_thermal.sd = sensor._sd_logging;
+		msg_thermal.sd = true;
 		msg_thermal.stream = false;
 
 		msg_thermal.data.id = ID_THERMAL;
@@ -135,7 +160,7 @@ void Thermal::update_sensor(struct k_work *work)
 void Thermal::sensor_timer_handler(struct k_timer *dummy)
 {
 	ARG_UNUSED(dummy);
-	k_work_submit_to_queue(&sensor_work_q, &sensor.sensor_work);
+	k_work_submit_to_queue(&thermal_work_q, &sensor.sensor_work);
 }
 
 void Thermal::start(int sample_rate_idx)
@@ -175,6 +200,8 @@ void Thermal::stop()
 	_running = false;
 
 	k_timer_stop(&sensor.sensor_timer);
+	struct k_work_sync sync;
+	(void)k_work_cancel_sync(&sensor.sensor_work, &sync);
 
 	pm_device_runtime_put(ls_1_8);
 	pm_device_runtime_put(ls_3_3);

@@ -202,9 +202,9 @@ int main(void) {
 	ERR_CHK(ret);
 
 	bt_mgmt_conn_interval_init(new ConnIntvlLinear(
-	    4,                // linear increase step (8ms units)
+	    1,
 	    CONFIG_BLE_ACL_CONN_INTERVAL,
-	    CONFIG_BLE_ACL_CONN_INTERVAL_SLOW
+	    CONFIG_BLE_ACL_CONN_INTERVAL
 	));
 
 	ret = init_time_sync();

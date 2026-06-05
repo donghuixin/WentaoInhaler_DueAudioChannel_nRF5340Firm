@@ -407,6 +407,8 @@ public:
     int setup();
     int mute(bool active);
     int set_volume(uint8_t volume);
+    int set_mic_select(uint8_t mic_mask);
+    int set_dmic_gain(uint8_t gain_reg);
 
     int soft_reset(bool full_reset = false);
 

@@ -67,15 +67,25 @@ static void conn_state_connected_check(struct bt_conn *conn, void *data)
 
 void mtu_updated(struct bt_conn *conn, uint16_t tx, uint16_t rx)
 {
-	LOG_INF("Updated MTU: TX: %d RX: %d bytes", tx, rx);
+	ARG_UNUSED(conn);
+
+	LOG_INF("ATT MTU updated: TX=%u RX=%u bytes (target >=247)", tx, rx);
+	if ((tx < 247U) || (rx < 247U)) {
+		LOG_WRN("ATT MTU below 247: 244-byte Audio/Thermal notifications cannot fit");
+	}
 }
 
 static void le_data_length_updated(struct bt_conn *conn,
 				   struct bt_conn_le_data_len_info *info)
 {
-	LOG_INF("LE data len updated: TX (len: %d time: %d)"
-	       " RX (len: %d time: %d)", info->tx_max_len,
-	       info->tx_max_time, info->rx_max_len, info->rx_max_time);
+	ARG_UNUSED(conn);
+
+	LOG_INF("LE data len updated: TX=%u bytes/%uus RX=%u bytes/%uus (target 251 bytes)",
+		info->tx_max_len, info->tx_max_time,
+		info->rx_max_len, info->rx_max_time);
+	if ((info->tx_max_len < 251U) || (info->rx_max_len < 251U)) {
+		LOG_WRN("LE data length below 251: large Audio/Thermal notifications may fragment");
+	}
 }
 
 static struct bt_le_conn_param *conn_param = BT_LE_CONN_PARAM(CONFIG_BLE_ACL_CONN_INTERVAL, CONFIG_BLE_ACL_CONN_INTERVAL, CONFIG_BLE_ACL_SLAVE_LATENCY, CONFIG_BLE_ACL_SUP_TIMEOUT);
@@ -83,19 +93,49 @@ static struct bt_le_conn_param *conn_param = BT_LE_CONN_PARAM(CONFIG_BLE_ACL_CON
 //callback
 static void conn_params_updated(struct bt_conn *conn, uint16_t interval, uint16_t latency, uint16_t timeout)
 {
-	struct bt_mgmt_msg msg;
-	int ret;
+	const uint32_t interval_us = (uint32_t)interval * 1250U;
 
-	LOG_INF("Conn params updated: interval %d unit, latency %d, timeout: %d0 ms",interval, latency, timeout);
+	LOG_INF("Conn params updated: interval=%u units (%u.%03u ms) latency=%u timeout=%u ms (target 7.500 ms)",
+		interval, interval_us / 1000U, interval_us % 1000U,
+		latency, (uint32_t)timeout * 10U);
+	if ((interval != CONFIG_BLE_ACL_CONN_INTERVAL) ||
+	    (latency != CONFIG_BLE_ACL_SLAVE_LATENCY)) {
+		LOG_WRN("Windows accepted different connection params: interval=%u latency=%u",
+			interval, latency);
+	}
 
 	bt_mgmt_ci_on_conn_param_updated(conn, interval, latency, timeout);
-
-	/*msg.event = BT_MGMT_CONNECTED;
-	msg.conn = conn;
-
-	ret = zbus_chan_pub(&bt_mgmt_chan, &msg, K_NO_WAIT);
-	ERR_CHK(ret);*/
 }
+
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+static const char *phy_name(uint8_t phy)
+{
+	switch (phy) {
+	case BT_GAP_LE_PHY_1M:
+		return "1M";
+	case BT_GAP_LE_PHY_2M:
+		return "2M";
+	case BT_GAP_LE_PHY_CODED:
+		return "Coded";
+	default:
+		return "Unknown";
+	}
+}
+
+static void le_phy_updated(struct bt_conn *conn,
+			   struct bt_conn_le_phy_info *info)
+{
+	ARG_UNUSED(conn);
+
+	LOG_INF("LE PHY updated: TX=%s RX=%s (target 2M/2M)",
+		phy_name(info->tx_phy), phy_name(info->rx_phy));
+	if ((info->tx_phy != BT_GAP_LE_PHY_2M) ||
+	    (info->rx_phy != BT_GAP_LE_PHY_2M)) {
+		LOG_WRN("Windows did not accept 2M PHY: TX=%s RX=%s",
+			phy_name(info->tx_phy), phy_name(info->rx_phy));
+	}
+}
+#endif
 
 static void connected_cb(struct bt_conn *conn, uint8_t err)
 {
@@ -163,7 +203,7 @@ static void connected_cb(struct bt_conn *conn, uint8_t err)
 	err = bt_conn_le_param_update(conn, conn_param);
 	if (err) {
 		LOG_ERR("Cannot update conneciton parameter (err: %d)", err);
-		return err;
+		return;
 	}
 	LOG_INF("Connection parameters update requested: interval_min %d interval_max %d latency %d timeout %d",
 		conn_param->interval_min, conn_param->interval_max,
@@ -252,6 +292,9 @@ static struct bt_conn_cb conn_callbacks = {
 	.disconnected = disconnected_cb,
 	.le_param_updated = conn_params_updated,
 	.le_data_len_updated = le_data_length_updated,
+#if defined(CONFIG_BT_USER_PHY_UPDATE)
+	.le_phy_updated = le_phy_updated,
+#endif
 #if defined(CONFIG_BT_SMP)
 	.security_changed = security_changed_cb,
 #endif /* defined(CONFIG_BT_SMP) */

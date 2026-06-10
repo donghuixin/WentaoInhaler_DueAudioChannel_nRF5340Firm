@@ -32,6 +32,7 @@ const TDM_MIC_OFFSET = 4;
 const AUDIO_PCM_SAMPLE_RATE_HZ = 16000;
 const IMU_HISTORY_LIMIT = 300;
 const IMU_AXIS_COLORS = ['#00d4ff', '#5bc0ff', '#9b7bff', '#ff5f8a', '#ff8f5f', '#ffd166', '#06d6a0', '#72efdd', '#a7f432'];
+const VIDEO_MIME_CANDIDATES = ['video/mp4;codecs=avc1.42E01E', 'video/mp4'];
 
 const els = {
   linkState: document.querySelector('#linkState'),
@@ -47,6 +48,7 @@ const els = {
   saveBtn: document.querySelector('#saveBtn'),
   statusText: document.querySelector('#statusText'),
   log: document.querySelector('#log'),
+  webcamPreview: document.querySelector('#webcamPreview'),
   thermalCanvas: document.querySelector('#thermalCanvas'),
   thermalInfo: document.querySelector('#thermalInfo'),
   imuInfo: document.querySelector('#imuInfo'),
@@ -71,7 +73,13 @@ const buffers = {
   stopMs: null,
   imu: [],
   thermal: [],
-  audio: []
+  audio: [],
+  video: {
+    chunks: [],
+    startMs: null,
+    endMs: null,
+    mimeType: ''
+  }
 };
 
 const thermalState = {
@@ -91,6 +99,11 @@ const imuWaveState = {
   series: []
 };
 
+let webcamStream = null;
+let mediaRecorder = null;
+let videoRecordingActive = false;
+let webcamStopPromise = null;
+
 function log(message) {
   const stamp = new Date().toLocaleTimeString();
   els.log.textContent = `[${stamp}] ${message}\n${els.log.textContent}`;
@@ -108,7 +121,7 @@ function setLinkState(text) {
 
 function sanitizePrefix(text) {
   const value = String(text || '').trim().replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40);
-  return value || 'ble_data';
+  return value || 'inhaler';
 }
 
 function resetBuffers() {
@@ -117,12 +130,21 @@ function resetBuffers() {
   buffers.imu = [];
   buffers.thermal = [];
   buffers.audio = [];
+  buffers.video = {
+    chunks: [],
+    startMs: null,
+    endMs: null,
+    mimeType: ''
+  };
 }
 
 function updateButtons() {
   els.startBtn.disabled = isCollecting;
   els.stopBtn.disabled = !isCollecting;
-  const hasData = buffers.imu.length > 0 || buffers.thermal.length > 0 || buffers.audio.length > 0;
+  const hasData = buffers.imu.length > 0 ||
+    buffers.thermal.length > 0 ||
+    buffers.audio.length > 0 ||
+    buffers.video.chunks.length > 0;
   els.saveBtn.disabled = !hasData;
 }
 
@@ -133,6 +155,29 @@ function readUint64Le(view, offset) {
   const lo = view.getUint32(offset, true);
   const hi = view.getUint32(offset + 4, true);
   return hi * 4294967296 + lo;
+}
+
+function formatTimestampMs(valueMs) {
+  if (!Number.isFinite(valueMs)) return '';
+  return valueMs.toFixed(3);
+}
+
+function sensorClockAnchor() {
+  if (buffers.thermal.length > 0) {
+    return {
+      deviceUs: buffers.thermal[0].timestamp_us,
+      wallMs: buffers.thermal[0].timestamp_ms
+    };
+  }
+  return null;
+}
+
+function alignedSensorTimestampMs(item) {
+  const anchor = sensorClockAnchor();
+  if (!anchor || !Number.isFinite(item.timestamp_us)) {
+    return item.timestamp_ms;
+  }
+  return anchor.wallMs + (item.timestamp_us - anchor.deviceUs) / 1000;
 }
 
 function thermalColor(v, min, max) {
@@ -288,11 +333,100 @@ async function writeSensorConfig(sensorId, sampleRateIndex, storageOptions) {
   await sensorConfigChar.writeValue(payload);
 }
 
+function chooseVideoMimeType() {
+  if (!window.MediaRecorder || typeof window.MediaRecorder.isTypeSupported !== 'function') {
+    return '';
+  }
+  for (const mimeType of VIDEO_MIME_CANDIDATES) {
+    if (MediaRecorder.isTypeSupported(mimeType)) return mimeType;
+  }
+  return '';
+}
+
+async function startWebcamRecording() {
+  if (videoRecordingActive) return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    throw new Error('Webcam recording is not supported in this browser');
+  }
+  const mimeType = chooseVideoMimeType();
+  if (!mimeType) {
+    throw new Error('This browser does not support MediaRecorder MP4');
+  }
+  webcamStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  if (els.webcamPreview) {
+    els.webcamPreview.srcObject = webcamStream;
+    try {
+      await els.webcamPreview.play();
+    } catch (_) {
+      // Some browsers may block play() promise; stream is still attached.
+    }
+  }
+  const recorder = new MediaRecorder(webcamStream, { mimeType });
+  const chunks = [];
+  recorder.addEventListener('dataavailable', (event) => {
+    if (event.data && event.data.size > 0) chunks.push(event.data);
+  });
+  recorder.addEventListener('stop', () => {
+    buffers.video.chunks = chunks;
+    if (!Number.isFinite(buffers.video.endMs)) {
+      buffers.video.endMs = Date.now();
+    }
+    videoRecordingActive = false;
+    cleanupWebcamStream();
+    updateButtons();
+  });
+  recorder.start(200);
+  mediaRecorder = recorder;
+  buffers.video.startMs = Date.now();
+  buffers.video.endMs = null;
+  buffers.video.chunks = [];
+  buffers.video.mimeType = mimeType;
+  videoRecordingActive = true;
+  webcamStopPromise = null;
+  log('Webcam recording started');
+}
+
+function cleanupWebcamStream() {
+  if (els.webcamPreview) {
+    els.webcamPreview.srcObject = null;
+  }
+  if (webcamStream) {
+    for (const track of webcamStream.getTracks()) {
+      track.stop();
+    }
+    webcamStream = null;
+  }
+}
+
+function stopWebcamRecording() {
+  if (webcamStopPromise) return webcamStopPromise;
+  if (!videoRecordingActive || !mediaRecorder) {
+    cleanupWebcamStream();
+    return Promise.resolve();
+  }
+  const recorder = mediaRecorder;
+  mediaRecorder = null;
+  buffers.video.endMs = Date.now();
+  webcamStopPromise = new Promise((resolve) => {
+    const done = () => {
+      webcamStopPromise = null;
+      resolve();
+    };
+    recorder.addEventListener('stop', done, { once: true });
+    if (recorder.state === 'inactive') {
+      done();
+      return;
+    }
+    recorder.stop();
+  });
+  return webcamStopPromise;
+}
+
 async function ensureConnected() {
   if (server?.connected) return;
   await requestDeviceAndConnect({
     acceptAllDevices: true,
-    optionalServices: [UUIDS.sensorService, UUIDS.audioWaveformService]
+    optionalServices: [UUIDS.sensorService, UUIDS.audioWaveformService, UUIDS.batteryService]
   });
 }
 
@@ -377,7 +511,7 @@ function disconnectDevice() {
   }
 }
 
-function handleImuSample(timestampUs, values) {
+function handleImuSample(timestampUs, values, timestampMs) {
   const [ax, ay, az, gx, gy, gz, mx, my, mz] = values;
   imuWaveState.series.push([ax, ay, az, gx, gy, gz, mx, my, mz]);
   if (imuWaveState.series.length > IMU_HISTORY_LIMIT) {
@@ -386,27 +520,33 @@ function handleImuSample(timestampUs, values) {
   renderImuWave();
   els.imuInfo.textContent = `ts=${timestampUs}`;
   if (isCollecting) {
-    buffers.imu.push({ timestamp_us: timestampUs, ax, ay, az, gx, gy, gz, mx, my, mz });
+    buffers.imu.push({ timestamp_ms: timestampMs, timestamp_us: timestampUs, ax, ay, az, gx, gy, gz, mx, my, mz });
   }
 }
 
 function decodeImuBatchPacket(view) {
+  const packetReceiveMs = Date.now();
   const baseTimestampUs = readUint64Le(view, 0);
   const sampleCount = view.getUint8(11);
   const expectedBytes = SENSOR_STREAM_HEADER_SIZE + sampleCount * IMU_STREAM_SAMPLE_SIZE;
   if (sampleCount <= 0 || view.byteLength !== expectedBytes) return;
+  const lastOffset = SENSOR_STREAM_HEADER_SIZE + (sampleCount - 1) * IMU_STREAM_SAMPLE_SIZE;
+  const lastSampleTimestampUs = baseTimestampUs + view.getUint32(lastOffset, true);
   for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
     const offset = SENSOR_STREAM_HEADER_SIZE + sampleIndex * IMU_STREAM_SAMPLE_SIZE;
     const deltaUs = view.getUint32(offset, true);
+    const sampleTimestampUs = baseTimestampUs + deltaUs;
+    const sampleTimestampMs = packetReceiveMs - (lastSampleTimestampUs - sampleTimestampUs) / 1000;
     const values = [];
     for (let axis = 0; axis < 9; axis++) {
       values.push(view.getFloat32(offset + 4 + axis * 4, true));
     }
-    handleImuSample(baseTimestampUs + deltaUs, values);
+    handleImuSample(sampleTimestampUs, values, sampleTimestampMs);
   }
 }
 
 function decodeThermalPacket(view) {
+  const packetReceiveMs = Date.now();
   const timestampUs = readUint64Le(view, 0);
   const frameSequence = view.getUint16(8, true);
   const pixelCount = view.getUint8(11);
@@ -427,6 +567,7 @@ function decodeThermalPacket(view) {
     thermalState.chunkCount = 0;
     thermalState.frameSequence = frameSequence;
     thermalState.frameTimestampUs = timestampUs;
+    thermalState.frameHostMs = packetReceiveMs;
   }
 
   if (thermalState.chunkReceived[packetIndex]) return;
@@ -440,6 +581,7 @@ function decodeThermalPacket(view) {
     renderThermalFrame();
     if (isCollecting) {
       buffers.thermal.push({
+        timestamp_ms: thermalState.frameHostMs ?? packetReceiveMs,
         timestamp_us: thermalState.frameTimestampUs,
         frame_sequence: thermalState.frameSequence,
         pixels: new Int16Array(thermalState.frameRaw)
@@ -462,6 +604,7 @@ function handleSensorStream(event) {
 }
 
 function decodeTdmPacket(view) {
+  const packetReceiveMs = Date.now();
   const payloadBytes = view.byteLength - TDM_MIC_OFFSET;
   if (payloadBytes <= 0 || payloadBytes % 2 !== 0) {
     return null;
@@ -484,7 +627,8 @@ function decodeTdmPacket(view) {
   for (let i = 0; i < sampleCount; i++) {
     samples[i] = view.getInt16(TDM_MIC_OFFSET + i * 2, true);
   }
-  return { timestamp_us: unwrappedUs, raw_timestamp_u32_us: rawUs, missing_samples: missingSamples, samples };
+  const timestampMs = packetReceiveMs - (sampleCount / AUDIO_PCM_SAMPLE_RATE_HZ) * 1000;
+  return { timestamp_ms: timestampMs, timestamp_us: unwrappedUs, raw_timestamp_u32_us: rawUs, missing_samples: missingSamples, samples };
 }
 
 function handleAudioData(event) {
@@ -506,6 +650,7 @@ async function startCollection() {
     resetPreviews();
     buffers.startMs = Date.now();
     audioTimestamp = { lastRawUs: null, lastUnwrappedUs: null };
+    await startWebcamRecording();
 
     if (!sensorStreamNotifying) {
       await gattStartNotifications(sensorStreamChar, handleSensorStream);
@@ -533,12 +678,16 @@ async function startCollection() {
   } catch (error) {
     log(`Start failed: ${error.message}`);
     setStatus('Start failed');
+    await stopWebcamRecording();
     isCollecting = false;
     updateButtons();
   }
 }
 
 async function stopCollection() {
+  isCollecting = false;
+  buffers.stopMs = Date.now();
+  const webcamStop = stopWebcamRecording();
   try {
     if (!server?.connected) return;
     await writeSensorConfig(IMU_SENSOR_ID, IMU_SAMPLE_RATE_INDEX, 0);
@@ -557,8 +706,7 @@ async function stopCollection() {
   } catch (error) {
     log(`Stop warning: ${error.message}`);
   } finally {
-    isCollecting = false;
-    buffers.stopMs = Date.now();
+    await webcamStop;
     setStatus('Stopped');
     updateButtons();
     log('Collection stopped');
@@ -568,26 +716,34 @@ async function stopCollection() {
 function buildCsv() {
   const rows = [];
   for (const item of buffers.imu) {
+    const timestampMs = alignedSensorTimestampMs(item);
     rows.push({
-      timestamp_us: item.timestamp_us,
-      csv: `${item.timestamp_us},IMU,9_axis_float32;rate_hz=100,${item.ax},${item.ay},${item.az},${item.gx},${item.gy},${item.gz},${item.mx},${item.my},${item.mz}`
+      timestamp_ms: timestampMs,
+      csv: `${formatTimestampMs(timestampMs)},IMU,9_axis_float32;rate_hz=100;device_us=${item.timestamp_us},${item.ax},${item.ay},${item.az},${item.gx},${item.gy},${item.gz},${item.mx},${item.my},${item.mz}`
     });
   }
   for (const item of buffers.audio) {
+    const timestampMs = item.timestamp_ms;
     rows.push({
-      timestamp_us: item.timestamp_us,
-      csv: `${item.timestamp_us},AUDIO,pcm16_16k_120_samples;raw_u32_us=${item.raw_timestamp_u32_us};missing_samples=${item.missing_samples},${Array.from(item.samples).join(',')}`
+      timestamp_ms: timestampMs,
+      csv: `${formatTimestampMs(timestampMs)},AUDIO,pcm16_16k_120_samples;raw_u32_us=${item.raw_timestamp_u32_us};missing_samples=${item.missing_samples},${Array.from(item.samples).join(',')}`
     });
   }
   for (const item of buffers.thermal) {
-    const fmt = `raw_int16_frame_32x24;frame_sequence=${item.frame_sequence};rate_hz=8;pixel_count=${THRM_PIXEL_COUNT}`;
+    const timestampMs = alignedSensorTimestampMs(item);
+    const fmt = `raw_int16_frame_32x24;frame_sequence=${item.frame_sequence};rate_hz=8;pixel_count=${THRM_PIXEL_COUNT};device_us=${item.timestamp_us}`;
     rows.push({
-      timestamp_us: item.timestamp_us,
-      csv: `${item.timestamp_us},IR,${fmt},${Array.from(item.pixels).join(',')}`
+      timestamp_ms: timestampMs,
+      csv: `${formatTimestampMs(timestampMs)},IR,${fmt},${Array.from(item.pixels).join(',')}`
     });
   }
-  rows.sort((a, b) => a.timestamp_us - b.timestamp_us);
-  return `timestamp_us,type,format,data...\n${rows.map((r) => r.csv).join('\n')}\n`;
+  rows.sort((a, b) => a.timestamp_ms - b.timestamp_ms);
+  const lines = rows.map((r) => r.csv);
+  if (Number.isFinite(buffers.video.startMs) && Number.isFinite(buffers.video.endMs)) {
+    lines.push(`${formatTimestampMs(buffers.video.startMs)},VIDEO,start`);
+    lines.push(`${formatTimestampMs(buffers.video.endMs)},VIDEO,end`);
+  }
+  return `timestamp_ms,type,format,data...\n${lines.join('\n')}\n`;
 }
 
 function downloadTextFile(filename, text) {
@@ -602,15 +758,35 @@ function downloadTextFile(filename, text) {
   URL.revokeObjectURL(url);
 }
 
+function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function saveCollection() {
-  if (buffers.imu.length === 0 && buffers.thermal.length === 0 && buffers.audio.length === 0) {
+  if (
+    buffers.imu.length === 0 &&
+    buffers.thermal.length === 0 &&
+    buffers.audio.length === 0 &&
+    buffers.video.chunks.length === 0
+  ) {
     log('Save skipped: no data');
     return;
   }
   const prefix = sanitizePrefix(els.filePrefix.value);
-  const filename = `${prefix}_${Date.now()}.csv`;
+  const filename = `${prefix}.csv`;
   const csv = buildCsv();
   downloadTextFile(filename, csv);
+  if (buffers.video.chunks.length > 0) {
+    const videoBlob = new Blob(buffers.video.chunks, { type: buffers.video.mimeType || 'video/mp4' });
+    downloadBlob(`${prefix}.mp4`, videoBlob);
+  }
   setStatus(`Saved ${filename}`);
   log(`Saved ${filename}`);
 }
